@@ -31,3 +31,8 @@ variable "jwt_audience" {
   type        = string
   description = "Audience aprovada na integração JWT."
 }
+
+variable "cluster_name" {
+  type        = string
+  description = "Cluster compartilhado obtido do contrato SSM; registrado no state para recuperação segura de destroy."
+}
