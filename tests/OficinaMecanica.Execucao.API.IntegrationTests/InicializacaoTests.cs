@@ -1,8 +1,8 @@
 using System.Net;
+using System.Diagnostics;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Options;
 
 namespace OficinaMecanica.Execucao.API.IntegrationTests;
 
@@ -26,11 +26,40 @@ public sealed class InicializacaoTests
     [InlineData("chave-curta")]
     public async Task Dado_ChaveInvalida_Quando_Iniciar_Entao_RecusaConfiguracao(string? secret)
     {
-        await using var factory = CriarFactory(secret);
-
-        var exception = Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
-
-        Assert.Contains("Configure issuer, audience e chave JWT", exception.Message);
+        var api = typeof(Program).Assembly.Location;
+        var inicio = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = Path.GetDirectoryName(api)!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        inicio.ArgumentList.Add(api);
+        inicio.Environment["Jwt__Secret"] = secret ?? string.Empty;
+        inicio.Environment["Jwt__Issuer"] = "oficina-mecanica-auth";
+        inicio.Environment["Jwt__Audience"] = "oficina-mecanica-api";
+        inicio.Environment["ProcessamentoLocal__Habilitado"] = "false";
+        inicio.Environment["ASPNETCORE_ENVIRONMENT"] = "Testing";
+        inicio.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:0";
+        using var processo = Process.Start(inicio)!;
+        var saida = processo.StandardOutput.ReadToEndAsync();
+        var erro = processo.StandardError.ReadToEndAsync();
+        using var limite = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try
+        {
+            await processo.WaitForExitAsync(limite.Token);
+            Assert.NotEqual(0, processo.ExitCode);
+            Assert.Contains("Configure issuer, audience e chave JWT", await saida + await erro);
+        }
+        finally
+        {
+            if (!processo.HasExited)
+            {
+                processo.Kill(entireProcessTree: true);
+                await processo.WaitForExitAsync();
+            }
+        }
     }
 
     internal static WebApplicationFactory<Program> CriarFactory(string? secret)

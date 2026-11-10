@@ -8,3 +8,16 @@ services:
       Jwt__Secret: ${JWT_SECRET:?Defina JWT_SECRET no arquivo .env}
       Jwt__Issuer: oficina-mecanica-auth
       Jwt__Audience: oficina-mecanica-api
+      ASPNETCORE_ENVIRONMENT: Development
+      ProcessamentoLocal__Habilitado: "true"
+      ProcessamentoLocal__Endpoint: http://dynamodb-local:8000
+      ProcessamentoLocal__Diretorio: /app/mensagens
+    volumes:
+      - ./.local/mensagens:/app/mensagens
+    depends_on:
+      - dynamodb-local
+  dynamodb-local:
+    image: amazon/dynamodb-local:3.1.0
+    command: -jar DynamoDBLocal.jar -inMemory -sharedDb
+    ports:
+      - "127.0.0.1:8000:8000"

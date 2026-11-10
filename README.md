@@ -2,15 +2,19 @@
 
 Serviço de diagnóstico, estoque físico, reservas e execução da Fase 4. Responsável: Gabriel. A arquitetura é definida pelas ADRs 0024–0026 e pela RFC-0007 do repositório da API.
 
-## Estado desta entrega — F4-03
+## Estado desta entrega — preparação e cancelamento da F4-05
 
-Base .NET 10 com Clean Architecture, healthcheck, validação JWT, testes, Dockerfile, manifests Kubernetes, workload Terraform e CI/CD próprios. As camadas Domain, Application e Infrastructure estão preparadas como projetos separados, sem regras artificiais para preencher a estrutura.
+Serviço .NET 10 com Clean Architecture, healthcheck, validação JWT, testes, Dockerfile, manifests Kubernetes, workload Terraform e CI/CD próprios. Domain mantém `Estoque`/`ItemEstoque` e as regras de reserva; Application separa preparação e cancelamento em Request/Response/Validator/UseCase, com portas tipadas. Infrastructure implementa persistência, unidade de trabalho DynamoDB, outbox e processamento local por arquivos; API configura HTTP e a composição das dependências.
 
-Diagnóstico, movimentação/reserva de estoque, comandos/eventos v1, idempotência, outbox e compensações serão extraídos na F4-05. DynamoDB, SQS FIFO e DLQ pertencem à F4-04 e ainda não estão provisionados nem conectados. O healthcheck atual verifica somente a aplicação; não comprova acesso a banco ou filas.
+`PrepararExecucao` reserva todo o lote ou persiste uma recusa sem reserva parcial. `CancelarPreparacao` libera o saldo uma vez, inclusive após reiniciar o processamento e reentregar com outro `mensagemId`. Estado, saldos, reservas por OS/item, deduplicação e outbox são confirmados na mesma transação, com comparação de revisões técnicas. A versão de negócio segue a RFC-0007 atualizada no [PR #325](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/325).
+
+O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. `AutorizarExecucao`, início/finalização física e integração ponta a ponta com OS/cobrança permanecem pendentes. DynamoDB, SQS FIFO e DLQ reais pertencem à F4-04 e ainda não estão provisionados nem conectados. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS.
 
 Nenhuma alteração desta entrega implementa a extração no monólito. Catálogo, clientes, veículos e coordenação da Saga continuam no serviço de OS. Não há acesso ao banco de outro serviço nem compartilhamento de Domain/migrations.
 
 ## Fontes da verdade
+
+- [Plano completo de execução, padronização de esteiras e resumo do PR #2](docs/plano-execucao-gabriel.md)
 
 - [README principal e funcionamento atual](https://github.com/oficina-mecanica-soat/oficina-mecanica-api)
 - [Plano de execução aprovado](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/186c601b1bf5ef2bb970c728a5ebe99d43bb8dce/docs/projeto/backlog-tecnico.md)
@@ -21,7 +25,7 @@ Nenhuma alteração desta entrega implementa a extração no monólito. Catálog
 
 ## Execução local
 
-Pré-requisitos: .NET SDK 10, Docker Desktop para o container. A base roda isoladamente, sem AWS e sem SQL Server. Na F4-04/05 serão adicionados DynamoDB Local e adaptador de mensagens substituível, conforme RFC-0007.
+Pré-requisitos: .NET SDK 10 e Docker Desktop. O Compose sobe API em 5094 e DynamoDB Local em `127.0.0.1:8000`, sem AWS ou SQL Server. DynamoDB Local usa credenciais fictícias definidas no cliente local, sem consultar credenciais do laboratório. Os dados do DynamoDB desta configuração são voláteis e permanecem enquanto seu container estiver ativo; reiniciar apenas a API preserva o estado, mas `compose down` o remove.
 
 ```powershell
 Copy-Item .env.example .env
@@ -33,11 +37,24 @@ docker compose down
 
 Resposta esperada: `Healthy`. A porta 5094 evita conflito com a API atual em 5093. O processo recusa inicialização sem issuer, audience e chave válida. O healthcheck é público; endpoints de negócio e suas políticas serão implementados com as regras extraídas, sem inventar rotas de sucesso nesta base.
 
+O worker lê envelopes JSON completos em `.local/mensagens/entrada/`. Após commit, arquiva em `processadas/`; resultados da outbox aparecem em `saida/`, com o `causationId` do comando original. Contratos inválidos vão para `investigacao/`, com código sanitizado; falhas técnicas preservam a entrada para repetição. Crie arquivos como `.tmp` e renomeie para `.json` só após terminar a gravação. Diretórios locais e `.env` não são versionados nem enviados à imagem.
+
+Para uma demonstração automatizada de reserva, dois reinícios reais da API, reentrega e cancelamento, com evidências locais preservadas:
+
+```powershell
+# Requer também AWS CLI instalada; o script usa exclusivamente endpoint localhost.
+./scripts/validar-fluxo-local.ps1
+```
+
+O script semeia um item novo no DynamoDB Local, confere saldo `10 → 7 disponíveis/3 reservados → 10/0`, e encerra os containers no final. Não usa nem modifica credenciais remotas. `-ManterContainers` mantém o ambiente local para inspeção. Arquivos substituem apenas o transporte; esses testes não comprovam FIFO, DLQ, IAM, visibility timeout ou conectividade SQS real.
+
 Sem Docker, defina `Jwt__Secret`, `Jwt__Issuer` e `Jwt__Audience` no ambiente local e execute:
 
 ```powershell
 dotnet run --project src/OficinaMecanica.Execucao.API --urls http://localhost:5094
 ```
+
+Por padrão, fora do Compose, o worker local está desligado. Para usar DynamoDB Local já iniciado, configure `ASPNETCORE_ENVIRONMENT=Development`, `ProcessamentoLocal__Habilitado=true`, `ProcessamentoLocal__Endpoint=http://localhost:8000`, `ProcessamentoLocal__Tabela` e `ProcessamentoLocal__Diretorio`. O modo local recusa endpoints remotos. Tabelas reais devem ser provisionadas pela esteira da F4-04; este bootstrap cria somente tabela local.
 
 O Compose usa issuer `oficina-mecanica-auth` e audience `oficina-mecanica-api`, conforme o contrato atual de Cliente. Aceitar também a identidade interna da OS exige validar explicitamente os emissores e políticas na integração F4-09; não presumir que compartilhar chave resolve essa integração.
 
@@ -54,6 +71,10 @@ node --test .github/scripts/*.test.cjs
 CI deriva da API: escopo documental, Git Flow, build, formato, testes sem ignorados, cobertura mínima de **90%** preservada da referência (acima dos 80% mínimos da Fase 4), Docker, manifests em Kind e Terraform. Analisadores .NET e avisos como erros fazem parte do build; a análise Sonar/equivalente exigida na F4-12 deve ser comprovada antes do aceite final. Scripts e testes de recuperação de destroy são preservados da API; não constituem evidência de recuperação de um deploy deste serviço ainda inexistente.
 
 Validação local em 10/11/2026: build sem avisos/erros; formato verificado; **11 testes .NET aprovados, zero ignorados e 100% de cobertura de linhas da base atual**; quatro testes Node de guardrails aprovados; Terraform 1.15.8 validado; imagem Docker construída e `GET /api/health` retornou `200 Healthy` em `localhost:5094`. Container e rede Compose encerrados após o teste. Esses números cobrem somente a base da F4-03, sem regras de estoque ou execução implementadas.
+
+A reorganização da F4-05 passou em **147 testes locais, zero ignorados** (59 Domain, 12 Application, 11 API, 65 Infrastructure), com build Release sem avisos e formato validado. Cobertura local consolidada: **96,62%**; o gate de 90% deve ser confirmado também no CI.
+
+A evidência acima da base é o marco histórico da F4-03. A validação da preparação/cancelamento e seus limites está em [extracao-preparacao.md](docs/extracao-preparacao.md). Testes de integração exigem Docker e falham se o container não puder iniciar; não são ignorados. Testcontainers usa a versão de referência do projeto com SSH.NET 2026.0.0 fixado somente no projeto de testes, corrigindo a dependência transitiva vulnerável sem suprimir os avisos do build.
 
 ## CI/CD e infraestrutura
 
@@ -88,4 +109,4 @@ Variables do repositório: `AWS_DEPLOY_ENABLED=false`, `AUTO_PR_ENABLED=true`, `
 
 ## Próximo passo
 
-F4-04/F4-05: modelar acessos DynamoDB (OS; item/filial; reservas por OS/item), condições/transações, contratos SQS FIFO e outbox, preservando as regras e os testes existentes. Publicar contratos SSM novos somente quando definidos na tarefa de infraestrutura. Observabilidade distribuída e métricas da Saga/DLQ serão evidenciadas na F4-11.
+F4-04/F4-05: provisionar e validar DynamoDB/SQS FIFO/DLQ pelas esteiras quando houver janela autorizada, conectar o workload ao transporte real e implementar autorização/início/finalização física. Atualizar contratos SSM na tarefa de infraestrutura e integrar com OS na F4-10. Observabilidade distribuída e métricas da Saga/DLQ serão evidenciadas na F4-11. O workload atual permanece sem consumidor remoto habilitado; não habilitar deploy para afirmar integração ainda não validada.
