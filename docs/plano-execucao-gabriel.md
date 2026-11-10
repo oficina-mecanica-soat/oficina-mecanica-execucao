@@ -147,3 +147,7 @@ A identidade IAM do workload, conexão do runtime, prova real no laboratório e 
 PR #4 da infraestrutura integrado em develop. O próximo incremento prepara `ConsumidorSqs` e `TransporteSqs`, reutilizando casos de uso, transação, deduplicação e publicador de outbox existentes. A nova porta de entrada `IProcessadorMensagem` é implementada pelo mesmo processador; a Application não recebe dependência AWS.
 
 Há testes de contrato com cliente SDK simulado, relógio controlado e integração com DynamoDB Local, sem interpretar mocks como prova SQS real. A composição do runtime, a identidade do workload, a URL de resultados publicada pelo owner OS e a observabilidade distribuída continuam pendentes. Não alterar silenciosamente IAM nem direcionar resultados à entrada do Execução. Esta etapa mantém o ambiente remoto desligado e não conclui a F4-04/F4-05 inteira.
+
+### Padronização obrigatória de estrutura — 10/11/2026
+
+Por orientação explícita de Gabriel, as pastas de scripts foram removidas da API e do Execução. Lógica operacional e testes são mantidos nos workflows existentes; arquivos temporários são gerados fora do conteúdo versionado. O gate de Git Flow impede pastas de scripts e novos diretórios de topo em todo PR. Não acrescentar estruturas auxiliares sem alinhamento. Esta reorganização não altera recursos de infraestrutura, contratos de mensagens ou regras de negócio; AWS permanece desabilitada.

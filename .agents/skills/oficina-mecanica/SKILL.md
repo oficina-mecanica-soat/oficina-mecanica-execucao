@@ -14,3 +14,11 @@ Na evolução para serviços independentes, cada serviço é dono dos próprios 
 Siga o padrão real de CI/CD da API, VPC e Kubernetes, comparando workflows, gates, Git Flow, promoções, environments, permissões e guardrails. Preserve os contratos SSM e o papel do Datadog. Não dispare deploy, apply ou destroy sem autorização específica.
 
 Use português brasileiro claro e acentuado em textos, mensagens, logs e PRs; conceitos do domínio em português e termos técnicos consolidados em inglês, seguindo identificadores existentes sem acentos. Aplique SOLID, Clean Code, KISS e DRY sem criar complexidade desnecessária. Verifique testes e evidências reais; preserve trabalho alheio e não exponha segredos.
+
+## Estrutura obrigatória em todos os PRs
+
+- Não versionar pastas `scripts/`, `.github/scripts` ou equivalentes em outros níveis. Não mover os mesmos arquivos para outra pasta para contornar essa regra.
+- Manter a estrutura existente; não acrescentar diretórios de topo ou novas estruturas auxiliares sem alinhamento explícito. Novas funcionalidades devem seguir as camadas e convenções já aprovadas dentro de `src`, `tests`, `infra` e `docs`.
+- Validações operacionais e seus testes ficam nos próprios workflows; arquivos temporários gerados durante a execução ficam somente no diretório temporário do runner, fora do conteúdo versionado.
+- A existência de pastas de scripts em outro repositório não autoriza copiá-las. Preservar as proteções e os testes ao ajustar a organização.
+- Conferir o gate de estrutura antes de enviar qualquer PR, inclusive documental. Não enfraquecer esse gate para publicar pastas não alinhadas.
