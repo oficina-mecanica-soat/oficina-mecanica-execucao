@@ -105,8 +105,336 @@ jobs:
           key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+      - &validacoes_inline
+        name: "🛡️ Preparar validações definidas no workflow"
+        run: |
+          cat > "$RUNNER_TEMP/bootstrap-account-state.cjs" <<'VALIDACAO_INLINE_0'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cp = require('node:child_process');
+
+          function projectResource(resource) {
+            return /oficina.?mecanica/i.test(JSON.stringify(resource));
+          }
+          function checkEmpty(label, resources) {
+            if (!Array.isArray(resources)) throw new Error(`Resposta inválida: ${label}`);
+            if (resources.some(projectResource)) throw new Error(`${label}: há recursos do projeto; bootstrap sem state bloqueado.`);
+          }
+          function main() {
+            const dir = process.env.TF_WORKING_DIRECTORY;
+            const stateFile = path.join(dir, 'terraform.tfstate');
+            const aws = (...args) => JSON.parse(cp.execFileSync('aws', [...args, '--region', process.env.AWS_REGION || 'us-east-1', '--output', 'json'], {encoding:'utf8',stdio:['ignore','pipe','pipe']}));
+            const account = aws('sts','get-caller-identity').Account;
+            if (fs.existsSync(stateFile)) {
+              const state = JSON.parse(fs.readFileSync(stateFile,'utf8'));
+              for (const r of (state.resources || []).filter(r=>r.mode==='managed')) {
+                for (const i of r.instances || []) {
+                  const a = i.attributes || {};
+                  const accounts = [a.owner_id,a.registry_id,a.arn?.match(/^arn:[^:]+:[^:]*:[^:]*:(\d{12}):/)?.[1],i.identity?.account_id].filter(Boolean);
+                  if (accounts.some(id=>id!==account)) throw new Error('State pertence a outra conta AWS; operação bloqueada.');
+                }
+              }
+              console.log(`State restaurado no escopo da conta ${account}.`);
+              return;
+            }
+            if (process.env.TERRAFORM_ACTION !== 'destroy') throw new Error('Cache da conta ausente. Bootstrap exige destroy dedicado e ambiente vazio.');
+            const checks = [
+              ['EKS',['eks','list-clusters'],'clusters'],
+              ['RDS',['rds','describe-db-instances'],'DBInstances'],
+              ['Lambda',['lambda','list-functions'],'Functions'],
+              ['API Gateway',['apigatewayv2','get-apis'],'Items'],
+              ['VPC Link',['apigatewayv2','get-vpc-links'],'Items'],
+              ['ECR',['ecr','describe-repositories'],'repositories'],
+              ['DynamoDB',['dynamodb','list-tables'],'TableNames'],
+              ['SQS',['sqs','list-queues','--max-results','1000'],'QueueUrls'],
+              ['Load Balancers',['elbv2','describe-load-balancers'],'LoadBalancers'],
+              ['VPC',['ec2','describe-vpcs'],'Vpcs'],
+              ['Subnets',['ec2','describe-subnets'],'Subnets'],
+              ['Security groups',['ec2','describe-security-groups'],'SecurityGroups'],
+              ['Volumes',['ec2','describe-volumes'],'Volumes'],
+              ['IPs elásticos',['ec2','describe-addresses'],'Addresses'],
+              ['Secrets (somente metadados)',['secretsmanager','list-secrets','--include-planned-deletion'],'SecretList'],
+              ['CloudWatch',['logs','describe-log-groups'],'logGroups'],
+            ];
+            for (const [label,args,key] of checks) {
+              const resultado = aws(...args);
+              checkEmpty(label, label === 'SQS' && !('QueueUrls' in resultado) ? [] : resultado[key]);
+              console.log(`${label}: nenhum recurso do projeto encontrado.`);
+            }
+            const parameters = aws('ssm','describe-parameters','--parameter-filters','Key=Name,Option=BeginsWith,Values=/oficina-mecanica/development/').Parameters;
+            if (!Array.isArray(parameters) || parameters.length) throw new Error('SSM: contratos existentes ou resposta inválida; bootstrap bloqueado.');
+            console.log(`Bootstrap autorizado somente para destroy: conta ${account} sem recursos do projeto. Caches históricos de outras contas preservados e fora da restauração.`);
+          }
+          module.exports={checkEmpty,projectResource};
+          if(require.main===module) {try{main();}catch(error){console.error(error.message);process.exit(1);}}
+          VALIDACAO_INLINE_0
+          cat > "$RUNNER_TEMP/preparar-ambiente-execucao.cjs" <<'VALIDACAO_INLINE_1'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cp = require('node:child_process');
+
+          function validarRegistry(nome, url, urlReal, conta, regiao) {
+            if (nome !== 'oficina-mecanica-execucao') throw new Error('Contrato SSM não identifica o registry do Execução.');
+            const esperado = `${conta}.dkr.ecr.${regiao}.amazonaws.com/${nome}`;
+            if (url !== esperado || urlReal !== url) throw new Error('Registry SSM divergente do ECR, da conta ou da região atual.');
+          }
+
+          function clusterDoState(state) {
+            const nomes = (state.resources || []).filter(r => r.mode === 'data' && r.type === 'aws_eks_cluster')
+              .flatMap(r => (r.instances || []).map(i => i.attributes?.name)).filter(Boolean);
+            const unicos = [...new Set(nomes)];
+            if (unicos.length > 1) throw new Error('State com mais de um cluster; recuperação bloqueada.');
+            return unicos[0] || '';
+          }
+
+          function main({ env = process.env, consultarAws } = {}) {
+            if (!['development', 'homologation', 'production'].includes(env.SSM_ENVIRONMENT_NAME))
+              throw new Error('Ambiente SSM ausente ou inválido; operação bloqueada.');
+            const dir = env.TF_WORKING_DIRECTORY;
+            const aws = consultarAws || ((...args) => cp.execFileSync('aws', [...args, '--region', env.AWS_REGION, '--output', 'text'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
+            let cluster = '';
+            let imagem = `destroy-only:sha-${'0'.repeat(40)}`;
+            let jwt = { jwt_secret: 'destroy-only-placeholder-000000000000', jwt_issuer: 'destroy-only', jwt_audience: 'destroy-only' };
+            if (env.TERRAFORM_ACTION === 'apply') {
+              if (!env.JWT_SECRET || Buffer.byteLength(env.JWT_SECRET) < 32 || !env.JWT_ISSUER?.trim() || !env.JWT_AUDIENCE?.trim())
+                throw new Error('Configure os secrets/variables JWT do Environment antes do deploy.');
+              const prefix = `/oficina-mecanica/${env.SSM_ENVIRONMENT_NAME}`;
+              const parameter = suffix => aws('ssm', 'get-parameter', '--name', `${prefix}/${suffix}`, '--query', 'Parameter.Value');
+              if (parameter('status/kubernetes') !== 'ready') throw new Error('Infraestrutura Kubernetes ainda não está ready.');
+              cluster = parameter('kubernetes/cluster_name');
+              if (!cluster || cluster === 'None') throw new Error('Contrato SSM de cluster ausente.');
+              const nome = parameter('kubernetes/execucao_ecr_repository_name');
+              const url = parameter('kubernetes/execucao_ecr_repository_url');
+              const real = aws('ecr', 'describe-repositories', '--repository-names', nome, '--query', 'repositories[0].repositoryUri');
+              validarRegistry(nome, url, real, env.AWS_ACCOUNT_ID, env.AWS_REGION);
+              imagem = `${url}:sha-${env.GITHUB_SHA}`;
+              jwt = { jwt_secret: env.JWT_SECRET, jwt_issuer: env.JWT_ISSUER, jwt_audience: env.JWT_AUDIENCE };
+            } else if (env.TERRAFORM_ACTION === 'destroy') {
+              const arquivo = path.join(dir, 'terraform.tfstate');
+              if (fs.existsSync(arquivo)) cluster = clusterDoState(JSON.parse(fs.readFileSync(arquivo, 'utf8')));
+            } else throw new Error('Ação Terraform inválida.');
+            const vars = { environment: env.SSM_ENVIRONMENT_NAME, ...jwt, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
+            fs.writeFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), JSON.stringify(vars), { mode: 0o600 });
+            fs.appendFileSync(env.GITHUB_OUTPUT, `ecr_image_uri=${imagem}\neks_cluster_name=${cluster}\n`);
+          }
+          module.exports = { validarRegistry, clusterDoState, main };
+          if (require.main === module) {
+            try { main(); } catch { console.error('Preparação do ambiente falhou; contratos, permissões e state devem ser conferidos. Nenhum valor sensível foi registrado.'); process.exit(1); }
+          }
+          VALIDACAO_INLINE_1
+          cat > "$RUNNER_TEMP/prepare-destroy.cjs" <<'VALIDACAO_INLINE_2'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cp = require('node:child_process');
+
+          function destroyConfig(state, region, confirmClusterAbsent) {
+            const resources = state.resources || [];
+            if (resources.some(r => /module\..*provider\[/.test(r.provider || ''))) {
+              throw new Error('Provider definido dentro de módulo exige tratamento específico; destroy bloqueado.');
+            }
+            const kubernetes = resources.filter(r => r.mode === 'managed' && r.type.startsWith('kubernetes_'));
+            let config = `provider "aws" { region = ${JSON.stringify(region)} }\n`;
+            if (kubernetes.length) {
+              const clusters = resources.filter(r => r.mode === 'data' && r.type === 'aws_eks_cluster')
+                .flatMap(r => (r.instances || []).map(i => i.attributes?.name)).filter(Boolean);
+              if (!clusters.length) throw new Error('State Kubernetes sem nome comprovável de cluster; recuperação bloqueada.');
+              if ([...new Set(clusters)].some(cluster => confirmClusterAbsent(cluster) === false)) return null;
+              config += 'provider "kubernetes" {\n host = "https://127.0.0.1"\n token = "destroy-only"\n}\n';
+              for (const r of kubernetes) {
+                if (r.module || !/^kubernetes_\w+$/.test(r.type) || !/^\w+$/.test(r.name)) {
+                  throw new Error('Endereço Kubernetes não suportado; recuperação bloqueada.');
+                }
+                config += `removed {\n from = ${r.type}.${r.name}\n lifecycle { destroy = false }\n}\n`;
+              }
+            }
+            return config;
+          }
+
+          function verifyPlan(plan) {
+            for (const change of plan.resource_changes || []) {
+              if ((change.change?.actions || []).some(a => !['no-op', 'delete', 'forget', 'read'].includes(a))) {
+                throw new Error(`Plano de destroy contém ação proibida: ${change.address}`);
+              }
+            }
+          }
+
+          function main() {
+            if (process.env.TERRAFORM_ACTION !== 'destroy') throw new Error('Este procedimento aceita somente destroy.');
+            const dir = process.env.TF_WORKING_DIRECTORY;
+            if (!dir) throw new Error('Diretório Terraform ausente.');
+            const run = (cmd, args) => cp.execFileSync(cmd, args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+            if (process.argv[2] === 'verify-plan') {
+              verifyPlan(JSON.parse(run('terraform', [`-chdir=${dir}`, 'show', '-json', 'tfplan'])));
+              console.log('Plano validado: nenhuma criação ou atualização permitida.');
+              return;
+            }
+            if (process.argv[2] === 'verify-state') {
+              const state = JSON.parse(fs.readFileSync(path.join(dir, 'terraform.tfstate'), 'utf8'));
+              if ((state.resources || []).some(r => r.mode === 'managed' && r.instances?.length)) {
+                throw new Error('State ainda contém recursos gerenciados; reconciliação incompleta.');
+              }
+              console.log('State final sem recursos gerenciados; cache pode ser persistido.');
+              return;
+            }
+            const identity = JSON.parse(run('aws', ['sts', 'get-caller-identity', '--output', 'json']));
+            console.log(`Destroy na conta AWS ${identity.Account}.`);
+            const stateFile = path.join(dir, 'terraform.tfstate');
+            const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {resources: []};
+            const config = destroyConfig(state, process.env.AWS_REGION || 'us-east-1', cluster => {
+              try {
+                run('aws', ['eks', 'describe-cluster', '--name', cluster, '--output', 'json']);
+              } catch (error) {
+                if (!String(error.stderr).includes('(ResourceNotFoundException)')) {
+                  throw new Error('Consulta EKS falhou sem confirmar ausência; recuperação bloqueada.');
+                }
+                console.log('EKS comprovadamente ausente; remoção declarativa dos vínculos Kubernetes no plano.');
+                return;
+              }
+              return false;
+            });
+            if (config === null) {
+              console.log('EKS existente: preservada a configuração normal para destruir o workload.');
+              return;
+            }
+            const backup = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'destroy-config-'));
+            for (const name of fs.readdirSync(dir)) {
+              if ((name.endsWith('.tf') || name.endsWith('.tf.json')) && name !== 'versions.tf') {
+                fs.renameSync(path.join(dir, name), path.join(backup, name));
+              }
+            }
+            fs.writeFileSync(path.join(dir, 'destroy_only.tf'), config);
+            console.log('Configuração temporária exclusiva de destroy; state preservado integralmente.');
+          }
+
+          module.exports = {destroyConfig, verifyPlan};
+          if (require.main === module) {
+            try { main(); } catch (error) { console.error(error.message); process.exit(1); }
+          }
+          VALIDACAO_INLINE_2
+          cat > "$RUNNER_TEMP/validar-ownership-plano.cjs" <<'VALIDACAO_INLINE_3'
+          const fs = require('node:fs');
+          function validarOwnership(plan) {
+            const bloqueados = new Set(['aws_vpc', 'aws_subnet', 'aws_nat_gateway', 'aws_internet_gateway', 'aws_route_table', 'aws_route', 'aws_route_table_association', 'aws_eks_cluster', 'aws_eks_node_group', 'aws_db_instance', 'aws_db_subnet_group', 'aws_ecr_repository', 'aws_security_group', 'aws_security_group_rule', 'aws_vpc_security_group_ingress_rule', 'aws_vpc_security_group_egress_rule', 'aws_lb', 'aws_lb_listener', 'aws_lb_target_group']);
+            const modules = ['module.vpc', 'module.eks', 'module.rds', 'module.ecr'];
+            const violacoes = (plan.resource_changes || []).filter(change => change.mode === 'managed'
+              && (bloqueados.has(change.type) || modules.some(prefix => change.address.startsWith(prefix)))
+              && (change.change?.actions || []).some(action => ['create', 'update', 'delete', 'replace'].includes(action)));
+            if (violacoes.length) throw new Error(`Infraestrutura compartilhada proibida no plano: ${violacoes.map(c => c.address).join(', ')}`);
+          }
+          module.exports = { validarOwnership };
+          if (require.main === module) {
+            try { validarOwnership(JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))); }
+            catch (error) { console.error(error.message); process.exit(1); }
+          }
+          VALIDACAO_INLINE_3
+          cat > "$RUNNER_TEMP/verificar-infra-execucao.cjs" <<'VALIDACAO_INLINE_4'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cp = require('node:child_process');
+
+          function contratosDoState(state) {
+            const atributos = (tipo, nome) => (state.resources || []).find(r => r.mode === 'managed' && !r.module && r.type === tipo && r.name === nome)?.instances?.[0]?.attributes || {};
+            const tabela = atributos('aws_dynamodb_table', 'execucao');
+            const entrada = atributos('aws_sqs_queue', 'entrada');
+            const dlq = atributos('aws_sqs_queue', 'dlq');
+            return {
+              dynamodb_table_name: tabela.name || tabela.id || '', dynamodb_table_arn: tabela.arn || '',
+              entrada_queue_url: entrada.url || entrada.id || '', entrada_queue_arn: entrada.arn || '',
+              dlq_url: dlq.url || dlq.id || '', dlq_arn: dlq.arn || ''
+            };
+          }
+
+          const atributosContagem = ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible', 'ApproximateNumberOfMessagesDelayed'];
+          function verificarPendencias(contratos, consultar) {
+            if (contratos.dynamodb_table_name) {
+              const outbox = consultar('dynamodb', 'query', '--table-name', contratos.dynamodb_table_name, '--key-condition-expression', 'PK = :pk', '--expression-attribute-values', JSON.stringify({ ':pk': { S: 'OUTBOX#PENDENTE' } }), '--consistent-read', '--select', 'COUNT', '--limit', '1');
+              if (outbox !== null && (!Number.isInteger(outbox.Count) || outbox.Count !== 0))
+                throw new Error('Outbox pendente ou resposta inválida: destroy bloqueado.');
+            }
+            for (const url of [contratos.entrada_queue_url, contratos.dlq_url].filter(Boolean)) {
+              const resposta = consultar('sqs', 'get-queue-attributes', '--queue-url', url, '--attribute-names', ...atributosContagem);
+              if (resposta === null) continue;
+              for (const atributo of atributosContagem) {
+                const valor = resposta.Attributes?.[atributo];
+                if (typeof valor !== 'string' || !/^\d+$/.test(valor) || Number(valor) !== 0)
+                  throw new Error('Mensagens pendentes ou contagem inválida na fila/DLQ: destroy bloqueado.');
+              }
+            }
+          }
+
+          function verificarInfra(contratos, prefix, consultar) {
+            if (Object.values(contratos).some(valor => !valor)) throw new Error('State incompleto: contratos de dados/mensageria ausentes.');
+            const tabela = consultar('dynamodb', 'describe-table', '--table-name', contratos.dynamodb_table_name)?.Table;
+            if (tabela?.TableStatus !== 'ACTIVE' || tabela.BillingModeSummary?.BillingMode !== 'PAY_PER_REQUEST'
+              || !tabela.KeySchema?.some(k => k.AttributeName === 'PK' && k.KeyType === 'HASH')
+              || !tabela.KeySchema?.some(k => k.AttributeName === 'SK' && k.KeyType === 'RANGE'))
+              throw new Error('Tabela real não corresponde ao contrato DynamoDB.');
+            for (const [url, arn, dlq] of [[contratos.entrada_queue_url, contratos.entrada_queue_arn, false], [contratos.dlq_url, contratos.dlq_arn, true]]) {
+              const atributos = consultar('sqs', 'get-queue-attributes', '--queue-url', url, '--attribute-names', 'All')?.Attributes;
+              if (!atributos || atributos.QueueArn !== arn || atributos.FifoQueue !== 'true'
+                || atributos.ContentBasedDeduplication !== 'false' || atributos.MessageRetentionPeriod !== (dlq ? '1209600' : '345600'))
+                throw new Error('Fila real não corresponde ao contrato FIFO/retenção.');
+              if (!dlq) {
+                const redrive = JSON.parse(atributos.RedrivePolicy || '{}');
+                if (atributos.VisibilityTimeout !== '60' || atributos.ReceiveMessageWaitTimeSeconds !== '20'
+                  || Number(redrive.maxReceiveCount) !== 5 || redrive.deadLetterTargetArn !== contratos.dlq_arn)
+                  throw new Error('Fila real não corresponde à recuperação definida na RFC.');
+              }
+            }
+            for (const [nome, valor] of Object.entries(contratos)) {
+              const parametro = consultar('ssm', 'get-parameter', '--name', `${prefix}/execucao/${nome}`)?.Parameter;
+              if (parametro?.Value !== valor || parametro.Type !== 'String') throw new Error('Contrato SSM divergente do state.');
+            }
+            if (consultar('ssm', 'get-parameter', '--name', `${prefix}/status/execucao`)?.Parameter?.Value !== 'ready')
+              throw new Error('Status de infraestrutura do Execução não está ready.');
+          }
+
+          function verificarRemocao(contratos, prefix, consultar) {
+            const confirmar = (...args) => { if (consultar(...args) !== null) throw new Error('Recurso ainda existe após destroy.'); };
+            if (contratos.dynamodb_table_name) confirmar('dynamodb', 'describe-table', '--table-name', contratos.dynamodb_table_name);
+            for (const url of [contratos.entrada_queue_url, contratos.dlq_url].filter(Boolean)) confirmar('sqs', 'get-queue-attributes', '--queue-url', url, '--attribute-names', 'QueueArn');
+            for (const nome of Object.keys(contratos)) confirmar('ssm', 'get-parameter', '--name', `${prefix}/execucao/${nome}`);
+            confirmar('ssm', 'get-parameter', '--name', `${prefix}/status/execucao`);
+          }
+
+          function consultarAws(...args) {
+            try {
+              return JSON.parse(cp.execFileSync('aws', [...args, '--region', process.env.AWS_REGION || 'us-east-1', '--output', 'json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+            } catch (error) {
+              const ausencias = { dynamodb: '(ResourceNotFoundException)', sqs: '(AWS.SimpleQueueService.NonExistentQueue)', ssm: '(ParameterNotFound)' };
+              if (ausencias[args[0]] && String(error.stderr).includes(ausencias[args[0]])) return null;
+              throw new Error(`Consulta ${args[0]}/${args[1]} falhou sem comprovar ausência; operação bloqueada.`);
+            }
+          }
+          function main() {
+            const dir = process.env.TF_WORKING_DIRECTORY;
+            const contexto = path.join(dir, 'execucao-destroy-context.json');
+            const stateFile = path.join(dir, 'terraform.tfstate');
+            const contratos = contratosDoState(fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {});
+            const prefix = `/oficina-mecanica/${process.env.SSM_ENVIRONMENT_NAME}`;
+            switch (process.argv[2]) {
+              case 'before-destroy':
+                verificarPendencias(contratos, consultarAws);
+                fs.writeFileSync(contexto, JSON.stringify(contratos));
+                console.log('Nenhuma pendência observada em filas/DLQ/outbox; produtores devem permanecer parados.');
+                break;
+              case 'after-destroy':
+                verificarRemocao(JSON.parse(fs.readFileSync(contexto, 'utf8')), prefix, consultarAws);
+                console.log('Tabela, filas e contratos de infraestrutura comprovadamente ausentes.');
+                break;
+              case 'after-apply':
+                verificarInfra(contratos, prefix, consultarAws);
+                console.log('Recursos e contratos de infraestrutura conferidos; não comprova acesso do workload.');
+                break;
+              default: throw new Error('Modo de verificação inválido.');
+            }
+          }
+          module.exports = { contratosDoState, verificarPendencias, verificarInfra, verificarRemocao, consultarAws };
+          if (require.main === module) { try { main(); } catch (error) { console.error(error.message); process.exit(1); } }
+          VALIDACAO_INLINE_4
+
       - name: "🛡️ Validar state da conta AWS atual"
-        run: node .github/scripts/bootstrap-account-state.cjs
+        run: node "$RUNNER_TEMP/bootstrap-account-state.cjs"
       - name: "📝 Consumir contratos SSM e preparar variáveis"
         id: platform
         env:
@@ -114,14 +442,14 @@ jobs:
           JWT_ISSUER: ${{ vars.JWT_ISSUER }}
           JWT_AUDIENCE: ${{ vars.JWT_AUDIENCE }}
           AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
-        run: node .github/scripts/preparar-ambiente-execucao.cjs
+        run: node "$RUNNER_TEMP/preparar-ambiente-execucao.cjs"
       - name: "🛡️ Bloquear destroy com mensagens ou outbox pendentes"
         if: env.TERRAFORM_ACTION == 'destroy'
-        run: node .github/scripts/verificar-infra-execucao.cjs before-destroy
+        run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" before-destroy
       - name: "🛡️ Preparar configuração exclusiva de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: |
-          node .github/scripts/prepare-destroy.cjs
+          node "$RUNNER_TEMP/prepare-destroy.cjs"
           if [ -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json"
           fi
@@ -154,10 +482,10 @@ jobs:
       - name: "🛡️ Bloquear infraestrutura compartilhada no plano"
         run: |
           terraform -chdir="$TF_WORKING_DIRECTORY" show -json tfplan > "$RUNNER_TEMP/tfplan.json"
-          node .github/scripts/validar-ownership-plano.cjs "$RUNNER_TEMP/tfplan.json"
+          node "$RUNNER_TEMP/validar-ownership-plano.cjs" "$RUNNER_TEMP/tfplan.json"
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
-        run: node .github/scripts/prepare-destroy.cjs verify-plan
+        run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-plan
       - name: "🧹 Remover arquivo temporário com secrets"
         if: always()
         run: rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json" "$RUNNER_TEMP/tfplan.json"
@@ -283,12 +611,14 @@ jobs:
           key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
           restore-keys: |
             execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+      - *validacoes_inline
+
       - name: "🛡️ Validar state da conta AWS atual"
-        run: node .github/scripts/bootstrap-account-state.cjs
+        run: node "$RUNNER_TEMP/bootstrap-account-state.cjs"
       - name: "🛡️ Preparar configuração exclusiva de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: |
-          node .github/scripts/prepare-destroy.cjs
+          node "$RUNNER_TEMP/prepare-destroy.cjs"
           if [ -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json"
           fi
@@ -307,21 +637,21 @@ jobs:
           path: ${{ env.TF_WORKING_DIRECTORY }}
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
-        run: node .github/scripts/prepare-destroy.cjs verify-plan
+        run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-plan
       - name: "🛡️ Revalidar pendências imediatamente antes do destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
-        run: node .github/scripts/verificar-infra-execucao.cjs before-destroy
+        run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" before-destroy
       - name: "✅ Aplicar somente o plano salvo"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false tfplan
       - name: "🔎 Confirmar state sem recursos gerenciados"
         if: env.TERRAFORM_ACTION == 'destroy'
-        run: node .github/scripts/prepare-destroy.cjs verify-state
+        run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-state
       - name: "🔎 Validar recursos e contratos após apply"
         if: env.TERRAFORM_ACTION == 'apply'
-        run: node .github/scripts/verificar-infra-execucao.cjs after-apply
+        run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" after-apply
       - name: "🔎 Confirmar remoção dos recursos e contratos"
         if: env.TERRAFORM_ACTION == 'destroy'
-        run: node .github/scripts/verificar-infra-execucao.cjs after-destroy
+        run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" after-destroy
       - name: "💾 Preservar state inclusive após falha parcial"
         if: always() && steps.aws_credentials.outputs.aws-account-id != ''
         uses: actions/cache/save@v6

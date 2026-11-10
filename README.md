@@ -39,14 +39,7 @@ Resposta esperada: `Healthy`. A porta 5094 evita conflito com a API atual em 509
 
 O worker lê envelopes JSON completos em `.local/mensagens/entrada/`. Após commit, arquiva em `processadas/`; resultados da outbox aparecem em `saida/`, com o `causationId` do comando original. Contratos inválidos vão para `investigacao/`, com código sanitizado; falhas técnicas preservam a entrada para repetição. Crie arquivos como `.tmp` e renomeie para `.json` só após terminar a gravação. Diretórios locais e `.env` não são versionados nem enviados à imagem.
 
-Para uma demonstração automatizada de reserva, dois reinícios reais da API, reentrega e cancelamento, com evidências locais preservadas:
-
-```powershell
-# Requer também AWS CLI instalada; o script usa exclusivamente endpoint localhost.
-./scripts/validar-fluxo-local.ps1
-```
-
-O script semeia um item novo no DynamoDB Local, confere saldo `10 → 7 disponíveis/3 reservados → 10/0`, e encerra os containers no final. Não usa nem modifica credenciais remotas. `-ManterContainers` mantém o ambiente local para inspeção. Arquivos substituem apenas o transporte; esses testes não comprovam FIFO, DLQ, IAM, visibility timeout ou conectividade SQS real.
+A pasta de scripts de demonstração foi removida por padronização. Os testes de integração existentes validam reserva, reentrega, compensação e persistência usando DynamoDB Local em Docker, sem credenciais AWS. Execute a suíte descrita em Testes e qualidade. O Compose permanece disponível para inspeção manual; arquivos substituem somente o transporte e não comprovam FIFO/DLQ/IAM/SQS reais.
 
 Sem Docker, defina `Jwt__Secret`, `Jwt__Issuer` e `Jwt__Audience` no ambiente local e execute:
 
@@ -65,10 +58,9 @@ dotnet restore OficinaMecanica.Execucao.sln
 dotnet build OficinaMecanica.Execucao.sln -c Release --no-restore -warnaserror
 dotnet format OficinaMecanica.Execucao.sln --verify-no-changes --no-restore
 dotnet test OficinaMecanica.Execucao.sln -c Release --no-build --collect:"XPlat Code Coverage" --settings tests/coverage.runsettings --results-directory TestResults --logger trx
-node --test .github/scripts/*.test.cjs
 ```
 
-CI deriva da API: escopo documental, Git Flow, build, formato, testes sem ignorados, cobertura mínima de **90%** preservada da referência (acima dos 80% mínimos da Fase 4), Docker, manifests em Kind e Terraform. Analisadores .NET e avisos como erros fazem parte do build; a análise Sonar/equivalente exigida na F4-12 deve ser comprovada antes do aceite final. Scripts e testes de recuperação de destroy são preservados da API; não constituem evidência de recuperação de um deploy deste serviço ainda inexistente.
+CI deriva da API: escopo documental, Git Flow, build, formato, testes sem ignorados, cobertura mínima de **90%** preservada da referência (acima dos 80% mínimos da Fase 4), Docker, manifests em Kind e Terraform. Analisadores .NET e avisos como erros fazem parte do build; a análise Sonar/equivalente exigida na F4-12 deve ser comprovada antes do aceite final. A lógica e os testes de recuperação de destroy derivados da API ficam nos próprios workflows; não constituem evidência de recuperação de um deploy deste serviço ainda inexistente.
 
 Validação local em 10/11/2026: build sem avisos/erros; formato verificado; **11 testes .NET aprovados, zero ignorados e 100% de cobertura de linhas da base atual**; quatro testes Node de guardrails aprovados; Terraform 1.15.8 validado; imagem Docker construída e `GET /api/health` retornou `200 Healthy` em `localhost:5094`. Container e rede Compose encerrados após o teste. Esses números cobrem somente a base da F4-03, sem regras de estoque ou execução implementadas.
 
@@ -184,3 +176,9 @@ O destino de resultados pertence ao serviço de OS conforme RFC-0007. Sua URL de
 Validação local: build Release sem avisos, suíte completa anterior com 170 testes aprovada e suíte unitária dos adaptadores com 22 testes aprovada após acrescentar a compatibilidade de UUIDs. O CI executa os 171 testes da solução atual e confirma a cobertura, preservando o gate de 90%. Dois cenários de integração usam DynamoDB Local real e SQS simulado: preparação/reentrega/cancelamento com confirmação somente após persistência, e retomada de outbox com a mesma deduplicação após envio confirmado e falha de gravação. São testes de contrato do adaptador; não comprovam comportamento FIFO/DLQ/IAM ou disponibilidade SQS reais.
 
 Continuam pendentes: identidade IAM validada do workload, composição do runtime remoto/DynamoDB/SQS, contrato da fila de resultados de OS, instrumentação/propagação de trace Datadog da F4-11 e validação real pela esteira. Nenhuma configuração de acesso AWS foi escolhida implicitamente. `AWS_DEPLOY_ENABLED=false` permanece ativo, sem consultas AWS, apply ou destroy. Avisar Gabriel quando a prova exigir novo laboratório.
+
+## Estrutura obrigatória dos PRs
+
+Validações operacionais e seus testes ficam nos YAMLs existentes de CI/CD. Não são versionadas pastas de scripts nem diretórios auxiliares adicionais. Trechos necessários à execução são gerados somente no diretório temporário do runner; não são enviados como conteúdo do repositório ou artefato de scripts.
+
+O job obrigatório de Git Flow verifica essa estrutura em todos os PRs, inclusive documentais: bloqueia qualquer pasta chamada `scripts` e novos diretórios de topo em relação à base do PR. Funcionalidades devem seguir as camadas existentes. Exceções de estrutura precisam de alinhamento explícito, sem remover o gate para contornar a regra. `AGENTS.md` e as orientações locais registram o mesmo requisito.
