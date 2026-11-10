@@ -1,0 +1,155 @@
+name: "☁️ AWS Deploy"
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        type: string
+        required: true
+      terraform_environment_directory:
+        type: string
+        required: true
+      ssm_environment_name:
+        type: string
+        required: true
+    outputs:
+      terraform_action:
+        value: ${{ jobs.deploy.outputs.terraform_action }}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: execucao-aws-${{ inputs.environment_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: "☁️ Publicar imagem e validar rollout"
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    outputs:
+      terraform_action: ${{ steps.action.outputs.terraform_action }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      TF_WORKING_DIRECTORY: infra/terraform/environments/${{ inputs.terraform_environment_directory }}
+      TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+      TF_VAR_jwt_issuer: ${{ vars.JWT_ISSUER }}
+      TF_VAR_jwt_audience: ${{ vars.JWT_AUDIENCE }}
+      ECR_REPOSITORY_NAME: ${{ vars.ECR_REPOSITORY_NAME }}
+      SSM_ENVIRONMENT_NAME: ${{ inputs.ssm_environment_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: "🚦 Conferir habilitação e ação versionada"
+        id: action
+        env:
+          DEPLOY_ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
+          BEFORE_SHA: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+          test "$DEPLOY_ENABLED" = true
+          test "$GITHUB_REF" = refs/heads/develop
+          control="$TF_WORKING_DIRECTORY/terraform-action.env"
+          action="$(sed -n 's/^TERRAFORM_ACTION=//p' "$control" | tr -d '\r')"
+          case "$action" in
+            apply) ;;
+            destroy)
+              test -n "$BEFORE_SHA"
+              git cat-file -e "$BEFORE_SHA^{commit}"
+              git diff --name-only "$BEFORE_SHA" "$GITHUB_SHA" -- "$control" | grep -Fx "$control"
+              ;;
+            *) echo 'Ação inválida; operação bloqueada.'; exit 1 ;;
+          esac
+          echo "terraform_action=$action" >> "$GITHUB_OUTPUT"
+          echo "TERRAFORM_ACTION=$action" >> "$GITHUB_ENV"
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v5
+      - name: "🔎 Validar plataforma e registry próprio"
+        id: platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TF_VAR_jwt_secret" && test -n "$TF_VAR_jwt_issuer" && test -n "$TF_VAR_jwt_audience"
+          test -n "$ECR_REPOSITORY_NAME"
+          test "$ECR_REPOSITORY_NAME" = oficina-mecanica-execucao
+          prefix="/oficina-mecanica/$SSM_ENVIRONMENT_NAME"
+          test "$(aws ssm get-parameter --name "$prefix/status/kubernetes" --query Parameter.Value --output text)" = ready
+          cluster="$(aws ssm get-parameter --name "$prefix/kubernetes/cluster_name" --query Parameter.Value --output text)"
+          aws eks update-kubeconfig --name "$cluster" --kubeconfig "$TF_VAR_kubeconfig_path"
+          repository="$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY_NAME" --query 'repositories[0].repositoryUri' --output text)"
+          test -n "$repository" && test "$repository" != None
+          echo "TF_VAR_image_uri=$repository:sha-$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "ECR_REGISTRY=${repository%%/*}" >> "$GITHUB_ENV"
+          echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_OUTPUT"
+      - name: "📦 Restaurar state isolado por conta e serviço"
+        id: state
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+          key: execucao-tfstate-${{ steps.platform.outputs.account_id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            execucao-tfstate-${{ steps.platform.outputs.account_id }}-${{ inputs.environment_name }}-
+      - name: "🛡️ Bloquear state ausente sem bootstrap explícito"
+        env:
+          ALLOW_BOOTSTRAP: ${{ vars.ALLOW_INITIAL_STATE_BOOTSTRAP }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s "$TF_WORKING_DIRECTORY/terraform.tfstate" ]; then
+            test "$TERRAFORM_ACTION" = apply && test "$ALLOW_BOOTSTRAP" = true
+            kubectl --kubeconfig "$TF_VAR_kubeconfig_path" get namespaces -o json > "$RUNNER_TEMP/namespaces.json"
+            node -e 'const n=require(process.argv[1]); if(n.items.some(x=>x.metadata.name==="oficina-mecanica-execucao")) process.exit(1)' "$RUNNER_TEMP/namespaces.json"
+          fi
+      - name: "🐳 Publicar imagem imutável"
+        if: env.TERRAFORM_ACTION == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker build -t "$TF_VAR_image_uri" .
+          docker push "$TF_VAR_image_uri"
+      - name: "📋 Gerar plano salvo"
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
+          if [ "$TERRAFORM_ACTION" = destroy ]; then
+            terraform -chdir="$TF_WORKING_DIRECTORY" plan -destroy -input=false -out=tfplan
+            node .github/scripts/prepare-destroy.cjs verify-plan
+          else
+            terraform -chdir="$TF_WORKING_DIRECTORY" plan -input=false -out=tfplan
+          fi
+      - name: "🚀 Aplicar somente o plano salvo"
+        run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false tfplan
+      - name: "✅ Validar rollout e health ou state vazio"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$TERRAFORM_ACTION" = destroy ]; then
+            node .github/scripts/prepare-destroy.cjs verify-state
+          else
+            kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao rollout status deployment/oficina-mecanica-execucao --timeout=600s
+            kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao port-forward service/oficina-mecanica-execucao 18080:80 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+            forward_pid=$!
+            trap 'kill "$forward_pid" 2>/dev/null || true' EXIT
+            curl --fail --retry 10 --retry-connrefused --retry-delay 2 http://localhost:18080/api/health
+          fi
+      - name: "💾 Preservar state inclusive após falha parcial"
+        if: always() && steps.platform.outputs.account_id != '' && hashFiles('infra/terraform/environments/dev/terraform.tfstate') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+          key: execucao-tfstate-${{ steps.platform.outputs.account_id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
