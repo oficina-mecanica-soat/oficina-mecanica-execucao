@@ -84,16 +84,32 @@ Fluxo: `feature/* → PR develop → PR release → PR main`. As branches de est
 
 O workload Terraform possui namespace próprio `oficina-mecanica-execucao`, Deployment, Service privado e Secret JWT, sem criar VPC, EKS, registry compartilhado ou banco alheio. Manifests `k8s/` são referência local/dry-run; na AWS o ownership é exclusivo do Terraform. O roteamento público será integrado na F4-09.
 
+### Modelo de deploy e contratos consumidos
+
+O workflow reutilizável segue os cinco jobs da API: `resolve_action`, `prepare_and_plan`, `build_and_push_image`, `apply_or_destroy` e `rollout_check`. Reutiliza a localização da CI do PR integrado, o artefato `execucao-image-pr-{numero}`, a comparação da árvore Git validada e a publicação da mesma imagem; o CD não recompila a imagem. Artefato ausente/expirado ou conteúdo diferente bloqueia o deploy; não há fallback para rebuild.
+
+O plano Terraform é gerado uma vez e transferido como artefato da execução/tentativa, com retenção de um dia. O apply usa somente esse plano, após conferir a mesma conta AWS. Há bloqueio de mudanças em VPC/EKS/RDS/ECR/NLB compartilhados. O rollout mantém o Service privado atual e valida `/api/health`; não afirma prontidão de DynamoDB/SQS ainda não conectados.
+
+Contratos do owner Kubernetes, aprovados no [PR #58](https://github.com/oficina-mecanica-soat/oficina-mecanica-infra-kubernetes/pull/58), sob `/oficina-mecanica/development`:
+
+| Sufixo SSM | Uso |
+| --- | --- |
+| `status/kubernetes` | Deve conter `ready`. |
+| `kubernetes/cluster_name` | Cluster compartilhado; não é criado neste serviço. |
+| `kubernetes/execucao_ecr_repository_name` | Deve identificar `oficina-mecanica-execucao`. |
+| `kubernetes/execucao_ecr_repository_url` | Deve coincidir com o ECR real da conta/região autenticada. |
+
+A variable `ECR_REPOSITORY_NAME` deixa de ser consumida. A infraestrutura publica os contratos somente no próximo apply autorizado; o merge do PR #58 não comprova sua existência na AWS.
+
 Dependências antes do primeiro deploy autorizado:
 
-1. Infra Kubernetes deve criar o registry **oficina-mecanica-execucao**, conforme ADR-0023/25. Não usar o registry da API nem criar ECR neste serviço.
-2. Plataforma publica os contratos existentes `/oficina-mecanica/development/status/kubernetes` e `/oficina-mecanica/development/kubernetes/cluster_name`.
-3. Configurar Environment `development` com secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `JWT_SECRET`; variables `AWS_REGION`, `ECR_REPOSITORY_NAME`, `JWT_ISSUER`, `JWT_AUDIENCE`.
-4. Confirmar emissor/audience compatíveis com os consumidores; configurar a chave sem divulgar/copiar valores em documentação.
-5. Primeiro state exige `ALLOW_INITIAL_STATE_BOOTSTRAP=true` **somente** após confirmar ausência do namespace; desabilitar após o primeiro deploy. State ausente com namespace existente bloqueia a operação.
-6. Habilitar `AWS_DEPLOY_ENABLED` apenas na janela autorizada de validação. Nenhum recurso foi criado pela preparação do repositório.
+1. Avisar Gabriel para criar o laboratório e atualizar os environments; manter `AWS_DEPLOY_ENABLED=false` até a janela autorizada.
+2. Seguir ADR-0012 para os caches da conta nova: apply sem state restaurado é bloqueado. Bootstrap somente por destroy dedicado em conta comprovadamente sem recursos/contratos do projeto, antes de provisionar as dependências. Não há autorização por `ALLOW_INITIAL_STATE_BOOTSTRAP` nem exceção por ausência de namespace.
+3. Provisionar VPC e Kubernetes/ECR pela ordem documentada e confirmar os quatro contratos acima. O workload não cria registry nem reaproveita o ECR da API.
+4. Configurar Environment `development` com secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `JWT_SECRET`; variables `AWS_REGION`, `JWT_ISSUER`, `JWT_AUDIENCE`. Confirmar emissor/audience com os consumidores sem divulgar valores sensíveis.
+5. Somente com a janela autorizada e as dependências validadas, habilitar `AWS_DEPLOY_ENABLED`. Merges atuais executam CI e mantêm deploy e promoção de alteração implantável bloqueados.
 
-O state local fica no cache do Actions isolado por serviço, conta e ambiente, seguindo a concessão acadêmica existente. Não há fallback entre contas. O Secret Kubernetes contém a chave no state, como na API atual; `sensitive` oculta a apresentação, sem remover o valor do state. A evolução para runtime/Secrets Manager permanece no backlog aprovado.
+O state local fica no cache do Actions isolado por serviço, conta e ambiente, seguindo a concessão acadêmica existente. Não há fallback entre contas. O Secret Kubernetes contém a chave no state e no plano salvo, como na concessão da API atual; `sensitive` oculta a apresentação, sem remover o valor desses arquivos. O tfvars temporário usa permissões restritas, é removido ao final e não é publicado como artefato. A evolução para runtime/Secrets Manager permanece no backlog aprovado.
 
 Terraform 1.15.8:
 
@@ -103,7 +119,13 @@ terraform -chdir=infra/terraform/environments/dev init -backend=false -input=fal
 terraform -chdir=infra/terraform/environments/dev validate
 ```
 
-Apply/destroy reais só pela esteira. `terraform-action.env` define a ação. Destroy exige alteração desse arquivo no próprio push, restauração do state, plataforma acessível, plano salvo exclusivo de remoção e validação final de state vazio. Reset do laboratório com EKS ausente exige reconciliação específica antes de usar o deploy: esta base bloqueia em vez de descartar state. Persistir state também após falha parcial evita perder ownership. Respeitar filas/outbox pendentes antes de destruir quando forem implementadas.
+Apply/destroy reais só pela esteira. `terraform-action.env` define a ação e permanece inalterado nesta padronização. Destroy exige alteração dedicada, state validado, plano exclusivo de remoção e state final sem recursos gerenciados. Os scripts de bootstrap/recuperação são os já existentes na referência.
+
+O Terraform registra `data.aws_eks_cluster.shared` e a identidade da conta para permitir verificar a qual cluster o workload pertence, sem assumir ownership do EKS. O provider Kubernetes foi movido de `versions.tf` para `providers.tf`, preservando seu endereço; isso permite à recuperação substituir a configuração quando o EKS estiver comprovadamente ausente. Com cluster existente, permanece o destroy normal. Com `ResourceNotFoundException`, a recuperação usa `removed` com `destroy=false`; não altera state manualmente nem recria infraestrutura. Não tenta gerar kubeconfig de cluster confirmado ausente.
+
+State legado sem identificação comprovável do cluster continua bloqueado para recuperação, exigindo reconciliação específica; não se presume ausência. AccessDenied, credencial inválida e falhas de rede não autorizam remoção. Cache é salvo também após falha parcial. Respeitar filas/outbox pendentes antes de destruir quando forem implementadas.
+
+Validação local desta padronização: nove testes Node aprovados, incluindo contratos SSM/registry, preparação simulada e proteção de ownership; Terraform 1.15.8 com formatação, init sem backend e validate aprovados; actionlint 1.7.12 aprovou os workflows (sem ShellCheck/Pyflakes). Os testes não comprovam publicação ECR, plano/apply/recuperação ou rollout reais. O CI mantém os gates existentes e repete as validações do serviço.
 
 Variables do repositório: `AWS_DEPLOY_ENABLED=false`, `AUTO_PR_ENABLED=true`, `RELEASE_BRANCH=release`. Secrets não são provisionados pelo bootstrap. O usuário `soat-architecture` deve ter acesso verificável antes da entrega; repositório público permite leitura, sem afirmar concessão administrativa.
 

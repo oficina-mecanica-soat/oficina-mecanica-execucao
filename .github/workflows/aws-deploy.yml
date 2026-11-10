@@ -13,7 +13,7 @@ on:
         required: true
     outputs:
       terraform_action:
-        value: ${{ jobs.deploy.outputs.terraform_action }}
+        value: ${{ jobs.resolve_action.outputs.terraform_action }}
 
 permissions:
   contents: read
@@ -23,21 +23,19 @@ concurrency:
   group: execucao-aws-${{ inputs.environment_name }}
   cancel-in-progress: false
 
+env:
+  TF_WORKING_DIRECTORY: infra/terraform/environments/${{ inputs.terraform_environment_directory }}
+  SSM_ENVIRONMENT_NAME: ${{ inputs.ssm_environment_name }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  TERRAFORM_VERSION: "1.15.8"
+
 jobs:
-  deploy:
-    name: "☁️ Publicar imagem e validar rollout"
+  resolve_action:
+    name: "🔎 01 · Resolver ação do Terraform"
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}
     outputs:
       terraform_action: ${{ steps.action.outputs.terraform_action }}
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      TF_WORKING_DIRECTORY: infra/terraform/environments/${{ inputs.terraform_environment_directory }}
-      TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
-      TF_VAR_jwt_issuer: ${{ vars.JWT_ISSUER }}
-      TF_VAR_jwt_audience: ${{ vars.JWT_AUDIENCE }}
-      ECR_REPOSITORY_NAME: ${{ vars.ECR_REPOSITORY_NAME }}
-      SSM_ENVIRONMENT_NAME: ${{ inputs.ssm_environment_name }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,7 +48,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
           test "$DEPLOY_ENABLED" = true
           test "$GITHUB_REF" = refs/heads/develop
           control="$TF_WORKING_DIRECTORY/terraform-action.env"
@@ -66,90 +63,295 @@ jobs:
           esac
           echo "terraform_action=$action" >> "$GITHUB_OUTPUT"
           echo "TERRAFORM_ACTION=$action" >> "$GITHUB_ENV"
-      - uses: aws-actions/configure-aws-credentials@v6
+
+  prepare_and_plan:
+    name: "📋 02 · Preparar variáveis e gerar plano do Terraform"
+    needs: resolve_action
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    outputs:
+      ecr_image_uri: ${{ steps.platform.outputs.ecr_image_uri }}
+      eks_cluster_name: ${{ steps.platform.outputs.eks_cluster_name }}
+      account_id: ${{ steps.aws_credentials.outputs.aws-account-id }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
+    steps:
+      - name: "📥 01 · Baixar código"
+        uses: actions/checkout@v7
+      - name: "📁 Definir kubeconfig temporário"
+        run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+      - name: "🔑 02 · Configurar credenciais AWS"
+        id: aws_credentials
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v4
+      - name: "🛠️ 03 · Instalar Terraform"
+        uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.15.8"
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
-      - uses: azure/setup-kubectl@v5
-      - name: "🔎 Validar plataforma e registry próprio"
-        id: platform
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$TF_VAR_jwt_secret" && test -n "$TF_VAR_jwt_issuer" && test -n "$TF_VAR_jwt_audience"
-          test -n "$ECR_REPOSITORY_NAME"
-          test "$ECR_REPOSITORY_NAME" = oficina-mecanica-execucao
-          prefix="/oficina-mecanica/$SSM_ENVIRONMENT_NAME"
-          test "$(aws ssm get-parameter --name "$prefix/status/kubernetes" --query Parameter.Value --output text)" = ready
-          cluster="$(aws ssm get-parameter --name "$prefix/kubernetes/cluster_name" --query Parameter.Value --output text)"
-          aws eks update-kubeconfig --name "$cluster" --kubeconfig "$TF_VAR_kubeconfig_path"
-          repository="$(aws ecr describe-repositories --repository-names "$ECR_REPOSITORY_NAME" --query 'repositories[0].repositoryUri' --output text)"
-          test -n "$repository" && test "$repository" != None
-          echo "TF_VAR_image_uri=$repository:sha-$GITHUB_SHA" >> "$GITHUB_ENV"
-          echo "ECR_REGISTRY=${repository%%/*}" >> "$GITHUB_ENV"
-          echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_OUTPUT"
-      - name: "📦 Restaurar state isolado por conta e serviço"
-        id: state
+      - name: "🛠️ 04 · Instalar kubectl"
+        uses: azure/setup-kubectl@v5
+      - name: "📦 Restaurar state da conta e ambiente"
         uses: actions/cache/restore@v6
         with:
-          path: ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-          key: execucao-tfstate-${{ steps.platform.outputs.account_id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
+          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            execucao-tfstate-${{ steps.platform.outputs.account_id }}-${{ inputs.environment_name }}-
-      - name: "🛡️ Bloquear state ausente sem bootstrap explícito"
+            execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+      - name: "🛡️ Validar state da conta AWS atual"
+        run: node .github/scripts/bootstrap-account-state.cjs
+      - name: "📝 Consumir contratos SSM e preparar variáveis"
+        id: platform
         env:
-          ALLOW_BOOTSTRAP: ${{ vars.ALLOW_INITIAL_STATE_BOOTSTRAP }}
-        shell: bash
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          JWT_ISSUER: ${{ vars.JWT_ISSUER }}
+          JWT_AUDIENCE: ${{ vars.JWT_AUDIENCE }}
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node .github/scripts/preparar-ambiente-execucao.cjs
+      - name: "🛡️ Preparar configuração exclusiva de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
         run: |
-          set -euo pipefail
-          if [ ! -s "$TF_WORKING_DIRECTORY/terraform.tfstate" ]; then
-            test "$TERRAFORM_ACTION" = apply && test "$ALLOW_BOOTSTRAP" = true
-            kubectl --kubeconfig "$TF_VAR_kubeconfig_path" get namespaces -o json > "$RUNNER_TEMP/namespaces.json"
-            node -e 'const n=require(process.argv[1]); if(n.items.some(x=>x.metadata.name==="oficina-mecanica-execucao")) process.exit(1)' "$RUNNER_TEMP/namespaces.json"
+          node .github/scripts/prepare-destroy.cjs
+          if [ -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
+            rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json"
           fi
-      - name: "🐳 Publicar imagem imutável"
-        if: env.TERRAFORM_ACTION == 'apply'
-        shell: bash
+      - name: "🔗 Configurar kubeconfig do EKS"
+        if: steps.platform.outputs.eks_cluster_name != ''
+        env:
+          EKS_CLUSTER_NAME: ${{ steps.platform.outputs.eks_cluster_name }}
         run: |
-          set -euo pipefail
-          aws ecr get-login-password | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-          docker build -t "$TF_VAR_image_uri" .
-          docker push "$TF_VAR_image_uri"
-      - name: "📋 Gerar plano salvo"
-        shell: bash
+          if [ ! -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
+            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --kubeconfig "$TF_VAR_kubeconfig_path"
+          fi
+      - name: "🚀 Inicializar e validar Terraform"
         run: |
-          set -euo pipefail
           terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
-          if [ "$TERRAFORM_ACTION" = destroy ]; then
-            terraform -chdir="$TF_WORKING_DIRECTORY" plan -destroy -input=false -out=tfplan
-            node .github/scripts/prepare-destroy.cjs verify-plan
-          else
-            terraform -chdir="$TF_WORKING_DIRECTORY" plan -input=false -out=tfplan
-          fi
-      - name: "🚀 Aplicar somente o plano salvo"
-        run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false tfplan
-      - name: "✅ Validar rollout e health ou state vazio"
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$TERRAFORM_ACTION" = destroy ]; then
-            node .github/scripts/prepare-destroy.cjs verify-state
-          else
-            kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao rollout status deployment/oficina-mecanica-execucao --timeout=600s
-            kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao port-forward service/oficina-mecanica-execucao 18080:80 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
-            forward_pid=$!
-            trap 'kill "$forward_pid" 2>/dev/null || true' EXIT
-            curl --fail --retry 10 --retry-connrefused --retry-delay 2 http://localhost:18080/api/health
-          fi
+          terraform -chdir="$TF_WORKING_DIRECTORY" validate
       - name: "💾 Preservar state inclusive após falha parcial"
-        if: always() && steps.platform.outputs.account_id != '' && hashFiles('infra/terraform/environments/dev/terraform.tfstate') != ''
+        if: always() && steps.aws_credentials.outputs.aws-account-id != ''
         uses: actions/cache/save@v6
         with:
-          path: ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-          key: execucao-tfstate-${{ steps.platform.outputs.account_id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
+          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
+      - name: "📐 Gerar plano do Terraform (apply)"
+        if: env.TERRAFORM_ACTION == 'apply'
+        run: terraform -chdir="$TF_WORKING_DIRECTORY" plan -input=false -out=tfplan
+      - name: "📐 Gerar plano do Terraform (destroy)"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: terraform -chdir="$TF_WORKING_DIRECTORY" plan -destroy -input=false -out=tfplan
+      - name: "🛡️ Bloquear infraestrutura compartilhada no plano"
+        run: |
+          terraform -chdir="$TF_WORKING_DIRECTORY" show -json tfplan > "$RUNNER_TEMP/tfplan.json"
+          node .github/scripts/validar-ownership-plano.cjs "$RUNNER_TEMP/tfplan.json"
+      - name: "🛡️ Validar plano exclusivo de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-plan
+      - name: "🧹 Remover arquivo temporário com secrets"
+        if: always()
+        run: rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json" "$RUNNER_TEMP/tfplan.json"
+      - name: "⬆️ Publicar o plano salvo"
+        uses: actions/upload-artifact@v7
+        with:
+          name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TF_WORKING_DIRECTORY }}/tfplan
+          retention-days: 1
+          if-no-files-found: error
+
+  build_and_push_image:
+    name: "🐳 03 · Publicar imagem produzida pela CI"
+    needs:
+      - resolve_action
+      - prepare_and_plan
+    if: needs.resolve_action.outputs.terraform_action == 'apply'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      ECR_IMAGE_URI: ${{ needs.prepare_and_plan.outputs.ecr_image_uri }}
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "📁 Definir kubeconfig temporário"
+        run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+      - name: "🔑 02 · Configurar credenciais AWS"
+        uses: aws-actions/configure-aws-credentials@v6
+        id: aws_credentials
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: "🔓 03 · Login no Amazon ECR"
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: "🔎 04 · Localizar a CI do PR que foi integrado"
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_number="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq ".[] | select(.merged_at != null and .base.ref == \"develop\" and .merge_commit_sha == \"$GITHUB_SHA\") | .number" | head -n 1)"
+          test -n "$pr_number" || { echo "::error::PR integrado não encontrado."; exit 1; }
+          head_sha="$(gh pr view "$pr_number" --json headRefOid --jq .headRefOid)"
+          run_id="$(gh run list --workflow ci.yml --commit "$head_sha" --event pull_request --status success --json databaseId --jq '.[0].databaseId // empty')"
+          test -n "$run_id" || { echo "::error::CI aprovada não encontrada para o PR."; exit 1; }
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: "⬇️ 05 · Baixar imagem da CI aprovada"
+        uses: actions/download-artifact@v8
+        with:
+          name: execucao-image-pr-${{ steps.ci.outputs.pr_number }}
+          path: ${{ runner.temp }}/ci-image
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.ci.outputs.run_id }}
+
+      - name: "🧾 06 · Conferir se o conteúdo integrado é o validado"
+        run: |
+          test "$(cat "$RUNNER_TEMP/ci-image/source-tree.txt")" = "$(git rev-parse 'HEAD^{tree}')" || {
+            echo "::error::O conteúdo integrado difere do validado pela CI. Deploy bloqueado."
+            exit 1
+          }
+
+      - name: "📤 07 · Publicar a mesma imagem no ECR"
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/ci-image/execucao-image.tar
+        run: |
+          docker load --input "$IMAGE_ARCHIVE"
+          docker tag "oficina-mecanica-execucao:ci" "$ECR_IMAGE_URI"
+          docker push "$ECR_IMAGE_URI"
+
+
+  apply_or_destroy:
+    name: "☁️ 04 · Aplicar ou destruir infraestrutura"
+    needs: [resolve_action, prepare_and_plan, build_and_push_image]
+    if: always() && needs.resolve_action.result == 'success' && needs.prepare_and_plan.result == 'success' && (needs.resolve_action.outputs.terraform_action == 'destroy' || needs.build_and_push_image.result == 'success')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
+      EKS_CLUSTER_NAME: ${{ needs.prepare_and_plan.outputs.eks_cluster_name }}
+      PLANNED_ACCOUNT_ID: ${{ needs.prepare_and_plan.outputs.account_id }}
+    steps:
+      - name: "📥 01 · Baixar código"
+        uses: actions/checkout@v7
+      - name: "📁 Definir kubeconfig temporário"
+        run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+      - name: "🔑 02 · Configurar credenciais AWS"
+        id: aws_credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: "🛠️ 03 · Instalar Terraform"
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: "🛠️ 04 · Instalar kubectl"
+        uses: azure/setup-kubectl@v5
+      - name: "🛡️ Confirmar a mesma conta do planejamento"
+        env:
+          CURRENT_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: test "$CURRENT_ACCOUNT_ID" = "$PLANNED_ACCOUNT_ID"
+      - name: "📦 Restaurar state da conta e ambiente"
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
+          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
+          restore-keys: |
+            execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+      - name: "🛡️ Validar state da conta AWS atual"
+        run: node .github/scripts/bootstrap-account-state.cjs
+      - name: "🛡️ Preparar configuração exclusiva de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: |
+          node .github/scripts/prepare-destroy.cjs
+          if [ -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
+            rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json"
+          fi
+      - name: "🔗 Configurar kubeconfig do EKS"
+        if: env.EKS_CLUSTER_NAME != ''
+        run: |
+          if [ ! -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
+            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --kubeconfig "$TF_VAR_kubeconfig_path"
+          fi
+      - name: "🚀 Inicializar Terraform"
+        run: terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
+      - name: "⬇️ Baixar o plano salvo desta tentativa"
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TF_WORKING_DIRECTORY }}
+      - name: "🛡️ Validar plano exclusivo de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-plan
+      - name: "✅ Aplicar somente o plano salvo"
+        run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false tfplan
+      - name: "🔎 Confirmar state sem recursos gerenciados"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-state
+      - name: "💾 Preservar state inclusive após falha parcial"
+        if: always() && steps.aws_credentials.outputs.aws-account-id != ''
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
+          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  rollout_check:
+    name: "☸️ 05 · Validar rollout da aplicação no EKS"
+    needs: [resolve_action, prepare_and_plan, apply_or_destroy]
+    if: needs.resolve_action.outputs.terraform_action == 'apply' && needs.apply_or_destroy.result == 'success'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EKS_CLUSTER_NAME: ${{ needs.prepare_and_plan.outputs.eks_cluster_name }}
+    steps:
+      - name: "📥 01 · Baixar código"
+        uses: actions/checkout@v7
+      - name: "📁 Definir kubeconfig temporário"
+        run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+      - name: "🔑 02 · Configurar credenciais AWS"
+        id: aws_credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: "🛠️ 04 · Instalar kubectl"
+        uses: azure/setup-kubectl@v5
+      - name: "🔗 Configurar kubeconfig do EKS"
+        run: |
+          if [ ! -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
+            aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --kubeconfig "$TF_VAR_kubeconfig_path"
+          fi
+      - name: "⏳ Aguardar rollout e validar healthcheck"
+        run: |
+          set -euo pipefail
+          kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao rollout status deployment/oficina-mecanica-execucao --timeout=600s
+          kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao get pods
+          kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao port-forward service/oficina-mecanica-execucao 18080:80 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+          forward_pid=$!
+          trap 'kill "$forward_pid" 2>/dev/null || true' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 2 http://localhost:18080/api/health
