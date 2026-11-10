@@ -1,0 +1,27 @@
+using OficinaMecanica.Execucao.Domain.GestaoEstoque.Entities;
+
+namespace OficinaMecanica.Execucao.Domain.UnitTests.GestaoEstoque.Factories;
+
+internal static class EstoqueTestDataFactory
+{
+    public const int QuantidadeDisponivelPadrao = 10;
+    public const int QuantidadeReservadaPadrao = 4;
+    public const int QuantidadeEntradaPadrao = 5;
+    public const int QuantidadeAtualizadaPadrao = 3;
+    public const int QuantidadeIndisponivelPadrao = 15;
+
+    public static ItemEstoque CriarItemEstoquePadrao(Guid? pecaInsumoCatalogoId = null, int quantidadeDisponivel = QuantidadeDisponivelPadrao)
+    {
+        return ItemEstoque.Criar(pecaInsumoCatalogoId ?? Guid.NewGuid(), quantidadeDisponivel);
+    }
+
+    public static ItemEstoque CriarItemEstoqueComReserva(Guid? pecaInsumoCatalogoId = null, int quantidadeDisponivel = QuantidadeDisponivelPadrao, int quantidadeReservada = QuantidadeReservadaPadrao)
+    {
+        var item = CriarItemEstoquePadrao(pecaInsumoCatalogoId, quantidadeDisponivel);
+
+        item.Reservar(quantidadeReservada);
+
+        return item;
+    }
+
+}

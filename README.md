@@ -2,11 +2,13 @@
 
 Serviço de diagnóstico, estoque físico, reservas e execução da Fase 4. Responsável: Gabriel. A arquitetura é definida pelas ADRs 0024–0026 e pela RFC-0007 do repositório da API.
 
-## Estado desta entrega — F4-03
+## Estado desta entrega — F4-03 e início da F4-05
 
 Base .NET 10 com Clean Architecture, healthcheck, validação JWT, testes, Dockerfile, manifests Kubernetes, workload Terraform e CI/CD próprios. As camadas Domain, Application e Infrastructure estão preparadas como projetos separados, sem regras artificiais para preencher a estrutura.
 
-Diagnóstico, movimentação/reserva de estoque, comandos/eventos v1, idempotência, outbox e compensações serão extraídos na F4-05. DynamoDB, SQS FIFO e DLQ pertencem à F4-04 e ainda não estão provisionados nem conectados. O healthcheck atual verifica somente a aplicação; não comprova acesso a banco ou filas.
+O primeiro incremento da F4-05 extrai as regras de `ItemEstoque` com seus testes e acrescenta o domínio local de reserva em lote/cancelamento. O [mapeamento de origem, limites e ponto de contrato pendente](docs/extracao-preparacao.md) distingue o que está implementado do que depende dos handlers e da persistência. A garantia de não liberar duas vezes vale nesta etapa para a mesma instância de domínio; deduplicação persistente, outbox e transações DynamoDB ainda não estão implementadas.
+
+Diagnóstico completo, comandos/eventos v1, processamento de mensagens e execução permanecem pendentes na F4-05. DynamoDB, SQS FIFO e DLQ pertencem à F4-04 e ainda não estão provisionados nem conectados. O healthcheck atual verifica somente a aplicação; não comprova acesso a banco ou filas.
 
 Nenhuma alteração desta entrega implementa a extração no monólito. Catálogo, clientes, veículos e coordenação da Saga continuam no serviço de OS. Não há acesso ao banco de outro serviço nem compartilhamento de Domain/migrations.
 
