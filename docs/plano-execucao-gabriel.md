@@ -6,6 +6,10 @@ Revisão em 10/11/2026. Este plano detalha a execução do backlog existente e a
 
 Fontes canônicas no repositório `oficina-mecanica-api`: README principal, `docs/projeto/backlog-tecnico.md`, ADR-0023/24/25/26 e RFC-0003/04/05/07. A RFC-0007 inclui o ajuste aprovado no PR #325. READMEs próprios detalham o funcionamento de cada componente. Quando README/guia e implementação divergem, registrar e corrigir a divergência por PR; não criar uma terceira variante nem assumir equivalência.
 
+Contexto original conferido no projeto Codex **FIAP FASE 4**, chat **Localizar contexto do projeto**: anexo `Contexto para IA.zip`, preservado em `D:\Workspace\oficina-mecanica\contexto-projeto`. Foram consultados `prompt_projeto.md`, `estrutura_projeto.md`, Domain Storytelling completo, linguagem ubíqua, diagramas táticos de Estoque/OS e o enunciado da Fase 4 contido no ZIP. Os snapshots de repositórios do arquivo são referência histórica; o estado atual foi conferido nos repositórios remotos.
+
+As restrições antigas de implantação monolítica são sucedidas pela ADR-0024. Permanecem válidos domínio, linguagem, organização por casos de uso, separação de camadas e simplicidade. Não restaurar a topologia antiga nem descartar as convenções do ZIP ao extrair serviços.
+
 | Componente/repositório documentado | Responsabilidade e dados |
 | --- | --- |
 | `oficina-mecanica-api` | Serviço de OS: clientes, veículos, autenticação interna, administrativo, catálogo, OS e orquestração da Saga; SQL Server existente. |
@@ -46,6 +50,9 @@ O `AWS_DEPLOY_ENABLED=false` do Execução permanece enquanto o laboratório est
 | Execução, contratos e bootstrap | Nome do ECR vem de variable e há bootstrap específico por namespace; recuperação da referência não é executada integralmente. | Consumir outputs do owner Kubernetes via SSM e adaptar o mecanismo documentado de state/recuperação, com testes. Não copiar verificações de recursos da API sem adequá-las ao Execução. |
 | RDS, plano | Job `plan` e job de aplicação geram planos em separado; a variante apply não transmite o mesmo arquivo entre eles. | Convergir para artefato do plano salvo, conforme padrão maduro. A dívida corresponde a `PIPE-002` e entra na padronização transversal solicitada, por PR próprio. Itens históricos como `PIPE-001` precisam de nova verificação antes de gerar trabalho. |
 | Documentação de CI da API | Guia ainda cita três arquivos CI por ambiente, enquanto os workflows atuais usam `ci.yml`. Há trechos antigos de ownership também no guia. | Reconciliar README/guias com o modelo vigente, preservando o fluxo por estágio; não recriar arquivos legados por interpretação isolada do guia. |
+| Execução, organização da Application | `ProcessadorPreparacao` concentra roteamento, preparação, cancelamento e validação; chaves físicas e controle genérico de documentos estão na Application. | Separar os casos de uso com Request/Response/Validator/UseCase conforme o padrão existente; manter o adaptador de mensagens como entrada e encapsular chaves/JSON/revisões técnicas de banco na Infrastructure. Preservar o contrato JSON aprovado. |
+| Execução, domínio e hospedagem | `ItemEstoque` foi extraído, mas o agregado `Estoque` e a organização de casos de uso do contexto precisam ser reconciliados; o worker local constrói componentes de persistência dentro da API. | Reutilizar o agregado e as regras existentes quando aplicáveis, justificar os novos componentes de preparação exigidos pela RFC e organizar hospedagem/DI e adaptadores sem lógica de persistência na API. Não copiar o agregado de OS inteiro para Execução. |
+| Execução, testes de Application | Os fluxos estão cobertos por integração com DynamoDB, mas não há projeto de testes unitários de Application equivalente à referência. | Acrescentar testes unitários dos casos de uso e alinhar convenções xUnit/FluentAssertions, nomes BDD e organização existente, mantendo testes de integração e o gate. |
 
 A padronização precisa ser verificável por matriz de jobs, triggers, permissões, environments, checks, artefatos, state, publicação, promoção e teardown. Nomes de checks diferem entre categorias já existentes (por exemplo, Quality gate 07 na API e 03 em Terraform); preservar a correspondência exata com cada ruleset. Essas categorias não autorizam estratégias diferentes de deploy/state/promoção.
 
@@ -54,7 +61,7 @@ A padronização precisa ser verificável por matriz de jobs, triggers, permiss�
 | Ordem | Backlog e responsável | Entrega e critério de conclusão | Necessita AWS? |
 | --- | --- | --- | --- |
 | 1 | Revisão da F4-03/F4-04; Gabriel e alinhamento com Geovanna | Registrar matriz e corrigir divergências das esteiras por PRs próprios, começando pelo Execução. Convergir o legado identificado nos demais repositórios, sem alterar branches de trabalho da outra frente. Revisar nomenclatura/contratos. | Não para preparar e validar; deploy continua bloqueado. |
-| 2 | F4-05, Gabriel — PR #2 | Preparação/cancelamento, extração de estoque, transação DynamoDB, deduplicação, outbox e testes locais. Revisão funcional separada da conclusão do CI/CD. | Não. |
+| 2 | F4-05, Gabriel — PR #2 | Ajustar a organização à estrutura do ZIP antes de solicitar aprovação: casos de uso/validadores, responsabilidades por camada e testes unitários de Application. Preservar a preparação/cancelamento persistentes e revalidar seus comportamentos. Revisão funcional separada da conclusão do CI/CD. | Não. |
 | 3 | F4-04, Gabriel; Kubernetes como owner do ECR | Terraform de DynamoDB sob demanda, fila FIFO, DLQ, contratos SSM e identidade de workload; registries no repositório Kubernetes. Preparar offline e comprovar criação/uso/limpeza via esteiras na primeira janela autorizada. | Sim, somente para prova real. Avisar antes. |
 | 4 | Restante F4-05, Gabriel | Extrair regras/testes de diagnóstico, `Servico`, início/finalização e baixa de estoque; implementar `AutorizarExecucao`, `ExecucaoIniciada` e `ExecucaoFinalizada`. Conectar SQS, confirmar após commit e tratar repetição/DLQ. Testes locais primeiro. | Só na validação SQS/workload real. |
 | 5 | F4-06/07/08/09, Geovanna, coordenação de contratos | OS/Saga/outbox; Orçamento/Pagamento com SQL e fila próprios; Mercado Pago de teste; autenticação privada e Gateway. Gabriel adapta consumidores apenas ao contrato acordado. | Conforme provas de banco/rede e integração. |
@@ -71,6 +78,17 @@ As frentes de Geovanna avançam em paralelo às de Gabriel conforme as dependên
 3. Na próxima parte, usar como fontes `Servico`, `IniciarDiagnosticoOrdemServicoUseCase`, `ReservarPecaInsumoUseCase`, `IniciarExecucaoServicoUseCase`, `FinalizarServicoUseCase` e as regras de baixa/finalização/cancelamento. Separar a regra física de Execução da atualização de OS e sua Saga; não mover o agregado de OS inteiro.
 4. Adaptar infraestrutura EF/SQL para DynamoDB com condições/transações. A preservação das regras não implica copiar a transação de OS/estoque entre bancos nem compartilhar projetos Domain/migrations.
 5. Retirar/encaminhar implementações antigas na API somente no corte integrado com a frente F4-06, Gateway e consumidores atualizados. Até lá, a cópia extraída não comprova migração do fluxo público.
+
+O padrão por funcionalidade é Request DTO, Response DTO, Validator e UseCase/Handler com responsabilidade única. Portas de repositório seguem a modelagem do domínio; adaptadores e armazenamento ficam na Infrastructure. Novos componentes necessários à preparação/Saga devem ser justificados pelo contrato aprovado, sem substituir os nomes do domínio por estruturas genéricas. A proposta de correção do PR #2 inclui casos como `PrepararExecucaoUseCase` e `CancelarPreparacaoUseCase`, nomes derivados dos comandos aprovados e do sufixo técnico existente; sua organização será mostrada no diff, sem renomear as mensagens.
+
+## Regras de negócio e pontos de integração a preservar
+
+- Cliente/veículo existem e o mecânico é atribuído antes da OS; cadastros/catálogo continuam com OS e seus dados não são consultados diretamente pelo Execução.
+- OS inicia Recebida; o mecânico inicia diagnóstico, define serviços e reserva peças. Reserva transfere saldo disponível para reservado, mantendo o total físico; baixa definitiva ocorre depois da finalização.
+- A linguagem ubíqua exige diagnóstico completo antes do orçamento. O código atual também exige ao menos um serviço para `AguardarAprovacao`. O snapshot em `ExecucaoPreparada` do PR #2 ainda não comprova o fluxo humano completo de diagnóstico; o critério de prontidão deve ser preservado na extração/integração, sem transformar a cópia de campos em diagnóstico concluído.
+- Sem aprovação da versão atual não há execução. Serviços individuais são iniciados/finalizados pelo mecânico; a OS só pode ser finalizada após todos os serviços concluídos.
+- Recusa/insuficiência seguem os fluxos de cancelamento aprovados. Falha técnica transitória provoca recuperação, sem ser apresentada como decisão de negócio. Baixa e estorno são consequências dos fluxos da OS, não novas ações públicas arbitrárias de estoque.
+- Pagamento deve ser confirmado pelo provedor antes da entrega. O estoque e os estados de integração/pagamento devem permanecer consistentes por filial e OS.
 
 ## Fluxo funcional final
 
@@ -96,6 +114,13 @@ Ordem de dependências: VPC → Kubernetes/ECR e dependências de banco → recu
 | O que foi validado? | 114 testes, nenhum ignorado; CI aprovado com 96,2% de cobertura; Compose com dois reinícios reais da API e saldo 10→7/3→10/0. |
 | Quais limites importam? | Até 46 itens por lote atômico; outbox serial global neste incremento; arquivos não comprovam SQS; início/finalização física e integração completa ainda pendentes. |
 | A esteira está integralmente padronizada? | Ainda não: divergências da base inicial estão identificadas acima e devem ser corrigidas antes de habilitar deploy. O PR #2 não altera workflows. |
+| A organização já atende integralmente ao contexto do ZIP? | Ainda não: a análise adicional identificou correções na organização dos casos de uso, detalhes de persistência na Application e testes unitários de Application. Corrigir antes de solicitar aprovação deste incremento. |
+
+## Aceite completo da Fase 4
+
+Conferência direta do enunciado do ZIP: pelo menos três microsserviços com repositórios, infraestrutura e bancos próprios; SQL e NoSQL; REST quando necessário e mensageria; nenhum acesso a banco alheio; Saga e compensação demonstráveis; Mercado Pago real em ambiente de teste; testes unitários por serviço e fluxo BDD completo; cobertura mínima de 80% por serviço, preservando gates existentes mais fortes; SonarQube ou similar no CI; build/testes/qualidade/deploy Kubernetes independentes; branches protegidas; observabilidade herdada da Fase 3.
+
+Por serviço: fonte, Dockerfile, manifests, pipelines, arquitetura documentada, cobertura com evidência no README e Swagger ou Postman atualizado. Na entrega: vídeo público/não listado de até 15 minutos mostrando fluxo completo, Saga/falhas, deploy automatizado e rastreamento; PDF com participantes/identificação, links dos repositórios e vídeo, diagrama final, escolha da Saga e justificativas técnicas. Os riscos P0 do backlog são permissões DynamoDB/SQS/laboratório, credenciais Mercado Pago, SQL com credenciais isoladas e acesso à análise de qualidade no CI. Não marcar esses itens concluídos com testes locais ou somente com cobertura.
 
 ## Resumo obrigatório nos próximos PRs
 
