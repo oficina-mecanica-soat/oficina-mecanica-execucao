@@ -4,7 +4,7 @@ using OficinaMecanica.Execucao.Application.Preparacoes.CancelarPreparacao;
 
 namespace OficinaMecanica.Execucao.Application.Mensagens;
 
-public sealed class ProcessadorPreparacao(PrepararExecucaoUseCase preparar, CancelarPreparacaoUseCase cancelar)
+public sealed class ProcessadorPreparacao(PrepararExecucaoUseCase preparar, CancelarPreparacaoUseCase cancelar) : IProcessadorMensagem
 {
     public async Task<Mensagem> ProcessarAsync(string json, CancellationToken cancellationToken = default)
     {
