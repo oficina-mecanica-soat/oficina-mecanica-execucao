@@ -1,0 +1,632 @@
+name: "🧪 CI"
+run-name: "🧪 Validar código · ${{ github.head_ref || github.ref_name }}"
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - release
+      - "release/**"
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: "10.0.x"
+
+jobs:
+  detect_ci_scope:
+    name: "🔎 00 · Detectar escopo do PR"
+    runs-on: ubuntu-latest
+    outputs:
+      ci_required: ${{ steps.detect.outputs.ci_required }}
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: "🔍 02 · Analisar arquivos alterados"
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          ci_required=false
+          changed_files="$(mktemp)"
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$changed_files"
+
+          if [ ! -s "$changed_files" ]; then
+            echo "No changed files found. Running full CI for safety."
+            ci_required=true
+          else
+            echo "Changed files:"
+            cat "$changed_files"
+
+            while IFS= read -r file; do
+              case "$file" in
+                *.md)
+                  ;;
+                *)
+                  ci_required=true
+                  break
+                  ;;
+              esac
+            done < "$changed_files"
+          fi
+
+          echo "ci_required=$ci_required" >> "$GITHUB_OUTPUT"
+          echo "CI required: $ci_required"
+
+  validate_git_flow:
+    name: "🔀 01 · Validar fluxo de branches"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 Conferir estrutura do repositório"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: "📁 Bloquear pastas extras e diretórios de scripts"
+        run: |
+          node <<'VALIDAR_ESTRUTURA'
+          const cp = require('node:child_process');
+          const nomes = args => cp.execFileSync('git', args, { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+          const assert = require('node:assert/strict');
+          // Estrutura aprovada do projeto, válida também em promoções para branches antigas.
+          const raizes = new Set([".agents", ".github", "docs", "infra", "k8s", "src", "tests"]);
+          function foraDoPadrao(arquivos) {
+            return arquivos.filter(nome => {
+              const pastas = nome.split('/').slice(0, -1);
+              return pastas.some(pasta => pasta.toLowerCase() === 'scripts') || (pastas.length > 0 && !raizes.has(pastas[0]));
+            });
+          }
+          assert.deepEqual(foraDoPadrao(['src/Caso/Novo.cs']), []);
+          assert.deepEqual(foraDoPadrao(['scripts/local.ps1', '.github/scripts/check.cjs', 'pasta-extra/arquivo']), ['scripts/local.ps1', '.github/scripts/check.cjs', 'pasta-extra/arquivo']);
+          const invalidos = foraDoPadrao(nomes(['ls-files']));
+          if (invalidos.length) throw new Error('Estrutura fora do padrão aprovado: ' + invalidos.join(', '));
+          console.log('Estrutura existente preservada; nenhuma pasta de scripts versionada.');
+          VALIDAR_ESTRUTURA
+
+      - name: "🔀 01 · Conferir origem e destino do PR"
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          echo "Base branch: $BASE_BRANCH"
+          echo "Head branch: $HEAD_BRANCH"
+
+          case "$BASE_BRANCH" in
+            develop)
+              case "$HEAD_BRANCH" in
+                main|release|release/*)
+                  echo "Protected stage branches must not open pull requests back to develop."
+                  exit 1
+                  ;;
+                *)
+                  echo "Pull request to develop follows the Git Flow entry point."
+                  ;;
+              esac
+              ;;
+
+            release|release/*)
+              if [ "$HEAD_BRANCH" != "develop" ]; then
+                echo "Pull requests to release must come from develop."
+                exit 1
+              fi
+
+              echo "Pull request to release follows the Git Flow promotion path."
+              ;;
+
+            main)
+              case "$HEAD_BRANCH" in
+                release|release/*)
+                  echo "Pull request to main follows the Git Flow production promotion path."
+                  ;;
+                *)
+                  echo "Pull requests to main must come from release or release/*."
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            *)
+              echo "Unsupported protected base branch: $BASE_BRANCH"
+              exit 1
+              ;;
+          esac
+
+  build_application:
+    name: "🏗️ 02 · Build da aplicação"
+    needs: detect_ci_scope
+    if: needs.detect_ci_scope.outputs.ci_required == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🛠️ 02 · Instalar SDK do .NET"
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: "📦 03 · Restaurar cache de pacotes NuGet"
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.sln', '**/*.csproj', '**/*.props', '**/*.targets') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: "📚 04 · Resolver dependências do projeto (dotnet restore)"
+        run: dotnet restore OficinaMecanica.Execucao.sln
+
+      - name: "🔨 05 · Compilar a solução"
+        run: dotnet build OficinaMecanica.Execucao.sln --configuration Release --no-restore -warnaserror
+
+  verify_code_style:
+    name: "🎨 03 · Verificar padrão de código"
+    needs: detect_ci_scope
+    if: needs.detect_ci_scope.outputs.ci_required == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🛠️ 02 · Instalar SDK do .NET"
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: "📚 03 · Resolver dependências do projeto (dotnet restore)"
+        run: dotnet restore OficinaMecanica.Execucao.sln
+
+      - name: "✅ 04 · Verificar formatação do código"
+        run: dotnet format OficinaMecanica.Execucao.sln --verify-no-changes --no-restore
+
+  test_application:
+    name: "🧪 04 · Testar aplicação"
+    needs: detect_ci_scope
+    if: needs.detect_ci_scope.outputs.ci_required == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🛠️ 02 · Instalar SDK do .NET"
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: "📦 03 · Restaurar cache de pacotes NuGet"
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.sln', '**/*.csproj', '**/*.props', '**/*.targets') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: "📚 04 · Resolver dependências do projeto (dotnet restore)"
+        run: dotnet restore OficinaMecanica.Execucao.sln
+
+      - name: "🔨 05 · Compilar a solução"
+        run: dotnet build OficinaMecanica.Execucao.sln --configuration Release --no-restore -warnaserror
+
+      - name: "🧪 06 · Executar testes com cobertura"
+        run: >
+          dotnet test OficinaMecanica.Execucao.sln
+          --configuration Release
+          --no-build
+          --collect:"XPlat Code Coverage"
+          --settings tests/coverage.runsettings
+          --results-directory ./TestResults
+          --logger "trx"
+
+      - name: "🔍 07 · Validar resultados dos testes"
+        shell: pwsh
+        run: |
+          $trxFiles = Get-ChildItem -Path TestResults -Recurse -Filter *.trx
+
+          if (-not $trxFiles) {
+            throw "No TRX test result files were generated."
+          }
+
+          $total = 0
+          $passed = 0
+          $failed = 0
+          $skipped = 0
+
+          foreach ($trxFile in $trxFiles) {
+            [xml]$trx = Get-Content -LiteralPath $trxFile.FullName
+            $counters = $trx.TestRun.ResultSummary.Counters
+
+            $total += [int]$counters.total
+            $passed += [int]$counters.passed
+            $failed += [int]$counters.failed
+            $skipped += [int]$counters.notExecuted
+          }
+
+          Write-Host "Tests: total=$total passed=$passed failed=$failed skipped=$skipped"
+
+          if ($total -eq 0) {
+            throw "Nenhum teste foi executado."
+          }
+
+          if ($failed -gt 0) {
+            throw "There are failing tests."
+          }
+
+          if ($skipped -gt 0) {
+            throw "CI coverage requires zero skipped tests. Check Docker availability before collecting coverage."
+          }
+
+      - name: "📊 08 · Gerar relatório de cobertura"
+        run: |
+          dotnet tool install --global dotnet-reportgenerator-globaltool
+          reportgenerator \
+            -reports:"TestResults/**/coverage.cobertura.xml" \
+            -targetdir:"TestResults/CoverageReport" \
+            -reporttypes:"HtmlInline_AzurePipelines;Cobertura;MarkdownSummaryGithub"
+
+      - name: "📈 09 · Validar limite mínimo de cobertura"
+        shell: pwsh
+        run: |
+          [xml]$coverage = Get-Content -LiteralPath TestResults/CoverageReport/Cobertura.xml
+          $lineRate = [double]::Parse($coverage.coverage.'line-rate', [System.Globalization.CultureInfo]::InvariantCulture)
+          $lineCoverage = [math]::Round($lineRate * 100, 2)
+
+          Write-Host "Line coverage: $lineCoverage%"
+
+          if ($lineCoverage -lt 90) {
+            throw "Line coverage $lineCoverage% is below the required 90% threshold."
+          }
+
+      - name: "⬆️ 10 · Publicar artefatos de teste e cobertura"
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-and-coverage-results
+          path: |
+            TestResults/**/*.trx
+            TestResults/**/coverage.cobertura.xml
+            TestResults/CoverageReport/**
+          if-no-files-found: error
+
+  build_container_image:
+    name: "🐳 05 · Build da imagem Docker"
+    needs: detect_ci_scope
+    if: needs.detect_ci_scope.outputs.ci_required == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🛠️ 02 · Configurar Docker Buildx"
+        uses: docker/setup-buildx-action@v4
+
+      - name: "🔨 03 · Compilar imagem Docker"
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: oficina-mecanica-execucao:ci
+          outputs: type=docker,dest=${{ runner.temp }}/execucao-image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: "🧾 04 · Identificar o conteúdo validado"
+        run: git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/source-tree.txt"
+
+      - name: "⬆️ 05 · Publicar imagem para o CD"
+        if: github.base_ref == 'develop'
+        uses: actions/upload-artifact@v7
+        with:
+          name: execucao-image-pr-${{ github.event.pull_request.number }}
+          path: |
+            ${{ runner.temp }}/execucao-image.tar
+            ${{ runner.temp }}/source-tree.txt
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+  validate_kubernetes_manifests:
+    name: "☸️ 06 · Validar manifests Kubernetes"
+    needs: detect_ci_scope
+    if: needs.detect_ci_scope.outputs.ci_required == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🛠️ 02 · Instalar kubectl"
+        uses: azure/setup-kubectl@v5
+
+      - name: "🌀 03 · Criar cluster Kind efêmero"
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci-validation
+
+      - name: "🔍 04 · Validar manifests com dry-run"
+        run: kubectl apply --dry-run=client -R -f k8s/
+
+  validate_terraform:
+    name: "🌐 Validar Terraform do Execução"
+    needs: detect_ci_scope
+    if: needs.detect_ci_scope.outputs.ci_required == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+      - name: "🧪 Validar recuperação segura de destroy"
+        run: |
+          node <<'PREPARAR_TESTES_INLINE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const origem = fs.readFileSync('.github/workflows/aws-deploy.yml', 'utf8');
+          // Extrai os mesmos blocos literais usados pelo CD; não mantém outra cópia da lógica.
+          const blocos = [...origem.matchAll(/^([ ]*)cat > "\$RUNNER_TEMP\/([^"\/]+\.cjs)" <<'(VALIDACAO_INLINE_\d+)'\r?\n([\s\S]*?)^\1\3\r?$/gm)];
+          const esperados = ["bootstrap-account-state.cjs", "preparar-ambiente-execucao.cjs", "prepare-destroy.cjs", "validar-ownership-plano.cjs", "verificar-infra-execucao.cjs"];
+          if (blocos.length !== esperados.length || !esperados.every(nome => blocos.some(bloco => bloco[2] === nome))) throw new Error('Blocos de validação ausentes ou divergentes.');
+          for (const bloco of blocos) {
+            const codigo = bloco[4].split('\n').map(linha => linha.slice(bloco[1].length)).join('\n');
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, bloco[2]), codigo);
+          }
+          PREPARAR_TESTES_INLINE
+          cat > "$RUNNER_TEMP/bootstrap-account-state.test.cjs" <<'TESTE_INLINE_0'
+          const {test}=require('node:test');
+          const assert=require('node:assert/strict');
+          const {checkEmpty}=require('./bootstrap-account-state.cjs');
+          test('bootstrap rejeita recursos do projeto e respostas inválidas',()=>{
+            assert.throws(()=>checkEmpty('VPC',[{Tags:[{Key:'Project',Value:'OficinaMecanica'}]}]),/bloqueado/);
+            assert.throws(()=>checkEmpty('Lambda',[{FunctionName:'oficina-mecanica-auth-lambda-dev'}]),/bloqueado/);
+            assert.throws(()=>checkEmpty('EKS',null),/inválida/);
+            checkEmpty('Lambda',[{FunctionName:'MainMonitoringFunction'}]);
+            checkEmpty('VPC',[{IsDefault:true}]);
+          });
+          TESTE_INLINE_0
+          cat > "$RUNNER_TEMP/contratos-execucao.test.cjs" <<'TESTE_INLINE_1'
+          const { test } = require('node:test');
+          const assert = require('node:assert/strict');
+          const { validarRegistry, clusterDoState } = require('./preparar-ambiente-execucao.cjs');
+          const { validarOwnership } = require('./validar-ownership-plano.cjs');
+
+          test('contrato aceita somente o registry de Execução da conta/região atual', () => {
+            const url = '123456789012.dkr.ecr.us-east-1.amazonaws.com/oficina-mecanica-execucao';
+            validarRegistry('oficina-mecanica-execucao', url, url, '123456789012', 'us-east-1');
+            for (const [nome, ssm, real, conta, regiao] of [
+              ['oficina-mecanica-api', url, url, '123456789012', 'us-east-1'],
+              ['oficina-mecanica-execucao', url, url, '999999999999', 'us-east-1'],
+              ['oficina-mecanica-execucao', url, url, '123456789012', 'us-west-2'],
+              ['oficina-mecanica-execucao', url, 'None', '123456789012', 'us-east-1'],
+              ['oficina-mecanica-execucao', 'None', url, '123456789012', 'us-east-1']
+            ]) assert.throws(() => validarRegistry(nome, ssm, real, conta, regiao));
+          });
+          test('destroy encontra cluster no state, sem depender de contratos SSM vivos', () => {
+            const recurso = nome => ({ mode: 'data', type: 'aws_eks_cluster', instances: [{ attributes: { name: nome } }] });
+            assert.equal(clusterDoState({ resources: [recurso('cluster-existente')] }), 'cluster-existente');
+            assert.equal(clusterDoState({}), '');
+            assert.throws(() => clusterDoState({ resources: [recurso('um'), recurso('outro')] }));
+          });
+          test('plano do workload rejeita alterar infraestrutura compartilhada, inclusive por módulo', () => {
+            const change = (type, address, mode = 'managed') => ({ type, address, mode, change: { actions: ['create'] } });
+            validarOwnership({ resource_changes: [change('kubernetes_deployment_v1', 'kubernetes_deployment_v1.execucao'), change('aws_eks_cluster', 'data.aws_eks_cluster.shared', 'data')] });
+            for (const recurso of [change('aws_ecr_repository', 'aws_ecr_repository.indevido'), change('aws_eks_cluster', 'aws_eks_cluster.indevido'), change('aws_db_instance', 'aws_db_instance.indevido'), change('outro_tipo', 'module.vpc.indevido')])
+              assert.throws(() => validarOwnership({ resource_changes: [recurso] }));
+          });
+
+          test('apply usa os contratos aprovados e não exporta o segredo junto aos outputs', () => {
+            const { main } = require('./preparar-ambiente-execucao.cjs');
+            const fs = require('node:fs');
+            const os = require('node:os');
+            const path = require('node:path');
+            const prefix = path.join(os.tmpdir(), 'execucao-contrato-');
+            const dir = fs.mkdtempSync(prefix);
+            const url = '123456789012.dkr.ecr.us-east-1.amazonaws.com/oficina-mecanica-execucao';
+            const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'apply', JWT_SECRET: 'a'.repeat(32), JWT_ISSUER: 'emissor', JWT_AUDIENCE: 'audiencia', AWS_REGION: 'us-east-1', AWS_ACCOUNT_ID: '123456789012', SSM_ENVIRONMENT_NAME: 'development', GITHUB_SHA: 'b'.repeat(40), TF_VAR_kubeconfig_path: 'kubeconfig-local' };
+            const pedidos = [];
+            try {
+              main({ env, consultarAws: (...args) => {
+                pedidos.push(args);
+                if (args[0] === 'ecr') return url;
+                const parametro = args[args.indexOf('--name') + 1];
+                const contratos = {
+                  '/oficina-mecanica/development/status/kubernetes': 'ready',
+                  '/oficina-mecanica/development/kubernetes/cluster_name': 'cluster-documentado',
+                  '/oficina-mecanica/development/kubernetes/execucao_ecr_repository_name': 'oficina-mecanica-execucao',
+                  '/oficina-mecanica/development/kubernetes/execucao_ecr_repository_url': url
+                };
+                assert.ok(parametro in contratos);
+                return contratos[parametro];
+              } });
+              const vars = JSON.parse(fs.readFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), 'utf8'));
+              assert.equal(vars.cluster_name, 'cluster-documentado');
+              assert.equal(vars.image_uri, `${url}:sha-${env.GITHUB_SHA}`);
+              assert.equal(vars.jwt_secret, env.JWT_SECRET);
+              assert.equal(pedidos.length, 5);
+              assert.ok(!fs.readFileSync(env.GITHUB_OUTPUT, 'utf8').includes(env.JWT_SECRET));
+              assert.throws(() => main({ env, consultarAws: () => { throw new Error('AccessDenied'); } }));
+            } finally {
+              assert.ok(path.resolve(dir).startsWith(path.resolve(prefix)));
+              fs.rmSync(dir, { recursive: true });
+            }
+          });
+
+          test('destroy prepara apenas os dados locais sem consultar SSM/ECR nem exigir JWT', () => {
+            const { main } = require('./preparar-ambiente-execucao.cjs');
+            const fs = require('node:fs');
+            const os = require('node:os');
+            const path = require('node:path');
+            const prefix = path.join(os.tmpdir(), 'execucao-contrato-');
+            const dir = fs.mkdtempSync(prefix);
+            try {
+              fs.writeFileSync(path.join(dir, 'terraform.tfstate'), JSON.stringify({ resources: [{ mode: 'data', type: 'aws_eks_cluster', instances: [{ attributes: { name: 'cluster-no-state' } }] }] }));
+              const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'destroy', SSM_ENVIRONMENT_NAME: 'development', TF_VAR_kubeconfig_path: 'local' };
+              main({ env, consultarAws: () => { throw new Error('Destroy não deve consultar contratos de plataforma'); } });
+              const vars = JSON.parse(fs.readFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), 'utf8'));
+              assert.equal(vars.cluster_name, 'cluster-no-state');
+              assert.match(vars.image_uri, /^destroy-only:sha-0{40}$/);
+            } finally {
+              assert.ok(path.resolve(dir).startsWith(path.resolve(prefix)));
+              fs.rmSync(dir, { recursive: true });
+            }
+          });
+          TESTE_INLINE_1
+          cat > "$RUNNER_TEMP/infra-execucao.test.cjs" <<'TESTE_INLINE_2'
+          const { test } = require('node:test');
+          const assert = require('node:assert/strict');
+          const { contratosDoState, verificarPendencias, verificarInfra, verificarRemocao } = require('./verificar-infra-execucao.cjs');
+          const contratos = { dynamodb_table_name: 'tabela', dynamodb_table_arn: 'arn:tabela', entrada_queue_url: 'entrada', entrada_queue_arn: 'arn:entrada', dlq_url: 'dlq', dlq_arn: 'arn:dlq' };
+          const semMensagens = { Attributes: { ApproximateNumberOfMessages: '0', ApproximateNumberOfMessagesNotVisible: '0', ApproximateNumberOfMessagesDelayed: '0' } };
+
+          test('destroy bloqueia outbox pendente e respostas inválidas, sem ler conteúdo de mensagens', () => {
+            for (const Count of [1, undefined, -1]) assert.throws(() => verificarPendencias(contratos, () => ({ Count })), /Outbox/);
+            verificarPendencias(contratos, (servico, operacao, ...args) => {
+              if (servico === 'dynamodb') {
+                assert.equal(operacao, 'query');
+                assert.ok(args.includes('--consistent-read'));
+                assert.ok(args.includes('COUNT'));
+                assert.ok(args.some(arg => arg.includes('OUTBOX#PENDENTE')));
+                return { Count: 0 };
+              }
+              return semMensagens;
+            });
+          });
+          test('destroy bloqueia mensagens visíveis, em voo, atrasadas e em DLQ', () => {
+            for (const atributo of Object.keys(semMensagens.Attributes)) {
+              for (const fila of ['entrada', 'dlq']) {
+                assert.throws(() => verificarPendencias(contratos, (servico, operacao, ...args) => servico === 'dynamodb' ? { Count: 0 }
+                  : args.includes(fila) ? { Attributes: { ...semMensagens.Attributes, [atributo]: '1' } } : semMensagens), /Mensagens pendentes/);
+              }
+            }
+            assert.throws(() => verificarPendencias(contratos, servico => servico === 'dynamodb' ? { Count: 0 } : { Attributes: {} }), /contagem inválida/);
+          });
+          test('ausência confirmada permite recuperação; falha de acesso não vira ausência', () => {
+            verificarPendencias(contratos, () => null);
+            verificarRemocao(contratos, '/oficina-mecanica/development', () => null);
+            assert.throws(() => verificarPendencias(contratos, () => { throw new Error('AccessDenied'); }), /AccessDenied/);
+            assert.throws(() => verificarRemocao(contratos, '/oficina-mecanica/development', () => { throw new Error('AccessDenied'); }), /AccessDenied/);
+            assert.throws(() => verificarRemocao(contratos, '/oficina-mecanica/development', () => ({})), /ainda existe/);
+          });
+          test('contexto de destroy vem dos recursos do state mesmo sem outputs após falha parcial', () => {
+            const recurso = (type, name, attributes) => ({ mode: 'managed', type, name, instances: [{ attributes }] });
+            const state = { resources: [recurso('aws_dynamodb_table', 'execucao', { name: 'tabela', arn: 'arn:tabela' }), recurso('aws_sqs_queue', 'entrada', { id: 'entrada', arn: 'arn:entrada' }), recurso('aws_sqs_queue', 'dlq', { url: 'dlq', arn: 'arn:dlq' })] };
+            assert.deepEqual(contratosDoState(state), contratos);
+            assert.ok(Object.values(contratosDoState({})).every(valor => valor === ''));
+          });
+          test('pós-apply confere tabela, filas, redrive e contratos reais; não presume acesso do workload', () => {
+            const prefix = '/oficina-mecanica/development';
+            const consultar = (servico, operacao, ...args) => {
+              if (servico === 'dynamodb') return { Table: { TableStatus: 'ACTIVE', BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' }, KeySchema: [{ AttributeName: 'PK', KeyType: 'HASH' }, { AttributeName: 'SK', KeyType: 'RANGE' }] } };
+              if (servico === 'sqs') return { Attributes: { QueueArn: args.includes('entrada') ? 'arn:entrada' : 'arn:dlq', FifoQueue: 'true', ContentBasedDeduplication: 'false', MessageRetentionPeriod: args.includes('entrada') ? '345600' : '1209600', VisibilityTimeout: '60', ReceiveMessageWaitTimeSeconds: '20', RedrivePolicy: JSON.stringify({ maxReceiveCount: '5', deadLetterTargetArn: 'arn:dlq' }) } };
+              const nome = args[args.indexOf('--name') + 1];
+              if (nome === `${prefix}/status/execucao`) return { Parameter: { Value: 'ready' } };
+              const chave = nome.slice(`${prefix}/execucao/`.length);
+              assert.ok(chave in contratos);
+              return { Parameter: { Value: contratos[chave], Type: 'String' } };
+            };
+            verificarInfra(contratos, prefix, consultar);
+            assert.throws(() => verificarInfra({ ...contratos, dlq_arn: '' }, prefix, consultar), /State incompleto/);
+            assert.throws(() => verificarInfra(contratos, prefix, (servico, ...args) => servico === 'ssm' ? { Parameter: { Value: 'outro', Type: 'String' } } : consultar(servico, ...args)), /Contrato SSM/);
+            assert.throws(() => verificarInfra(contratos, prefix, (servico, ...args) => servico === 'sqs' ? { Attributes: {} } : consultar(servico, ...args)), /Fila real/);
+          });
+
+
+          test('preparação não assume development quando o ambiente não foi informado', () => {
+            const { main } = require('./preparar-ambiente-execucao.cjs');
+            assert.throws(() => main({ env: { TERRAFORM_ACTION: 'destroy' }, consultarAws: () => assert.fail('Não deve consultar AWS') }), /Ambiente SSM/);
+          });
+          TESTE_INLINE_2
+          cat > "$RUNNER_TEMP/prepare-destroy.test.cjs" <<'TESTE_INLINE_3'
+          const {test} = require('node:test');
+          const assert = require('node:assert/strict');
+          const {destroyConfig, verifyPlan} = require('./prepare-destroy.cjs');
+          test('destroy AWS não inclui contratos SSM nem modifica state', () => {
+            const state = {resources:[{mode:'managed',type:'aws_vpc',name:'this',provider:'provider["registry.terraform.io/hashicorp/aws"]'}]};
+            const before = JSON.stringify(state);
+            assert.match(destroyConfig(state,'us-east-1',()=>assert.fail()), /provider "aws"/);
+            assert.equal(JSON.stringify(state),before);
+          });
+          test('Kubernetes exige ausência comprovada do EKS e usa removed declarativo', () => {
+            const state = {resources:[{mode:'data',type:'aws_eks_cluster',instances:[{attributes:{name:'test'}}]}, {mode:'managed',type:'kubernetes_namespace_v1',name:'this'}]};
+            assert.throws(()=>destroyConfig(state,'us-east-1',()=>{throw Error('AccessDenied')}),/AccessDenied/);
+            assert.match(destroyConfig(state,'us-east-1',name=>assert.equal(name,'test')),/from = kubernetes_namespace_v1.this/);
+            assert.match(destroyConfig(state,'us-east-1',()=>{}),/destroy = false/);
+            assert.throws(()=>destroyConfig({resources:[state.resources[1]]},'us-east-1',()=>{}),/sem nome/);
+          });
+          test('plano rejeita criação, atualização e substituição', () => {
+            for(const actions of [['create'],['update'],['delete','create']]) assert.throws(()=>verifyPlan({resource_changes:[{address:'test',change:{actions}}]}),/proibida/);
+            for(const actions of [['no-op'],['delete'],['forget']]) verifyPlan({resource_changes:[{change:{actions}}]});
+          });
+          TESTE_INLINE_3
+          node --test "$RUNNER_TEMP/bootstrap-account-state.test.cjs" "$RUNNER_TEMP/contratos-execucao.test.cjs" "$RUNNER_TEMP/infra-execucao.test.cjs" "$RUNNER_TEMP/prepare-destroy.test.cjs"
+
+      - run: terraform fmt -check -recursive infra/terraform
+      - run: terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
+      - run: terraform -chdir=infra/terraform/environments/dev validate
+      - name: "🧪 Validar contratos Terraform com providers simulados"
+        run: terraform -chdir=infra/terraform/environments/dev test
+
+  quality_gate:
+    name: "🚦 07 · Quality gate"
+    runs-on: ubuntu-latest
+    needs:
+      - detect_ci_scope
+      - validate_git_flow
+      - build_application
+      - verify_code_style
+      - test_application
+      - build_container_image
+      - validate_kubernetes_manifests
+      - validate_terraform
+    if: always()
+
+    steps:
+      - name: "🚦 01 · Conferir status de todos os jobs do CI"
+        run: |
+          if [ "${{ needs.detect_ci_scope.result }}" != "success" ]; then
+            echo "CI scope detection failed."
+            exit 1
+          fi
+
+          if [ "${{ needs.validate_git_flow.result }}" != "success" ]; then
+            echo "Git Flow branch validation failed."
+            exit 1
+          fi
+
+          if [ "${{ needs.detect_ci_scope.outputs.ci_required }}" != "true" ]; then
+            echo "Only documentation or Markdown files changed. Heavy CI skipped safely."
+            exit 0
+          fi
+
+          results=(
+            "${{ needs.build_application.result }}"
+            "${{ needs.verify_code_style.result }}"
+            "${{ needs.test_application.result }}"
+            "${{ needs.build_container_image.result }}"
+            "${{ needs.validate_kubernetes_manifests.result }}"
+            "${{ needs.validate_terraform.result }}"
+          )
+
+          for result in "${results[@]}"; do
+            if [ "$result" != "success" ]; then
+              echo "One or more CI responsibilities failed."
+              exit 1
+            fi
+          done
+
+          echo "All CI responsibilities passed."

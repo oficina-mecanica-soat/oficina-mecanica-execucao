@@ -1,0 +1,22 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.tools/
+.local/
+TestResults/
+.env
+*.user
+**/.terraform/
+*.tfstate*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Contexto temporário de validação do destroy
+**/execucao-destroy-context.json
