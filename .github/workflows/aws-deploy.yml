@@ -33,7 +33,6 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TF_WORKING_DIRECTORY: infra/terraform/environments/${{ inputs.terraform_environment_directory }}
-      TF_VAR_kubeconfig_path: ${{ runner.temp }}/execucao-kubeconfig
       TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
       TF_VAR_jwt_issuer: ${{ vars.JWT_ISSUER }}
       TF_VAR_jwt_audience: ${{ vars.JWT_AUDIENCE }}
@@ -51,6 +50,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
           test "$DEPLOY_ENABLED" = true
           test "$GITHUB_REF" = refs/heads/develop
           control="$TF_WORKING_DIRECTORY/terraform-action.env"
