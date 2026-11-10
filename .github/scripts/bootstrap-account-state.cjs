@@ -34,6 +34,8 @@ function main() {
     ['API Gateway',['apigatewayv2','get-apis'],'Items'],
     ['VPC Link',['apigatewayv2','get-vpc-links'],'Items'],
     ['ECR',['ecr','describe-repositories'],'repositories'],
+    ['DynamoDB',['dynamodb','list-tables'],'TableNames'],
+    ['SQS',['sqs','list-queues','--max-results','1000'],'QueueUrls'],
     ['Load Balancers',['elbv2','describe-load-balancers'],'LoadBalancers'],
     ['VPC',['ec2','describe-vpcs'],'Vpcs'],
     ['Subnets',['ec2','describe-subnets'],'Subnets'],
@@ -44,7 +46,8 @@ function main() {
     ['CloudWatch',['logs','describe-log-groups'],'logGroups'],
   ];
   for (const [label,args,key] of checks) {
-    checkEmpty(label,aws(...args)[key]);
+    const resultado = aws(...args);
+    checkEmpty(label, label === 'SQS' && !('QueueUrls' in resultado) ? [] : resultado[key]);
     console.log(`${label}: nenhum recurso do projeto encontrado.`);
   }
   const parameters = aws('ssm','describe-parameters','--parameter-filters','Key=Name,Option=BeginsWith,Values=/oficina-mecanica/development/').Parameters;

@@ -115,6 +115,9 @@ jobs:
           JWT_AUDIENCE: ${{ vars.JWT_AUDIENCE }}
           AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
         run: node .github/scripts/preparar-ambiente-execucao.cjs
+      - name: "🛡️ Bloquear destroy com mensagens ou outbox pendentes"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/verificar-infra-execucao.cjs before-destroy
       - name: "🛡️ Preparar configuração exclusiva de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: |
@@ -162,7 +165,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.TF_WORKING_DIRECTORY }}/tfplan
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/tfplan
+            ${{ env.TF_WORKING_DIRECTORY }}/execucao-destroy-context.json
           retention-days: 1
           if-no-files-found: error
 
@@ -303,11 +308,20 @@ jobs:
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node .github/scripts/prepare-destroy.cjs verify-plan
+      - name: "🛡️ Revalidar pendências imediatamente antes do destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/verificar-infra-execucao.cjs before-destroy
       - name: "✅ Aplicar somente o plano salvo"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false tfplan
       - name: "🔎 Confirmar state sem recursos gerenciados"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node .github/scripts/prepare-destroy.cjs verify-state
+      - name: "🔎 Validar recursos e contratos após apply"
+        if: env.TERRAFORM_ACTION == 'apply'
+        run: node .github/scripts/verificar-infra-execucao.cjs after-apply
+      - name: "🔎 Confirmar remoção dos recursos e contratos"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/verificar-infra-execucao.cjs after-destroy
       - name: "💾 Preservar state inclusive após falha parcial"
         if: always() && steps.aws_credentials.outputs.aws-account-id != ''
         uses: actions/cache/save@v6

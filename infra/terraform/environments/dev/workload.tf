@@ -17,6 +17,8 @@ resource "kubernetes_secret_v1" "jwt" {
 }
 
 resource "kubernetes_deployment_v1" "execucao" {
+  depends_on = [aws_ssm_parameter.execucao_status]
+
   metadata {
     name      = "oficina-mecanica-execucao"
     namespace = kubernetes_namespace_v1.execucao.metadata[0].name

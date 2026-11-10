@@ -17,6 +17,8 @@ function clusterDoState(state) {
 }
 
 function main({ env = process.env, consultarAws } = {}) {
+  if (!['development', 'homologation', 'production'].includes(env.SSM_ENVIRONMENT_NAME))
+    throw new Error('Ambiente SSM ausente ou inválido; operação bloqueada.');
   const dir = env.TF_WORKING_DIRECTORY;
   const aws = consultarAws || ((...args) => cp.execFileSync('aws', [...args, '--region', env.AWS_REGION, '--output', 'text'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
   let cluster = '';
@@ -40,7 +42,7 @@ function main({ env = process.env, consultarAws } = {}) {
     const arquivo = path.join(dir, 'terraform.tfstate');
     if (fs.existsSync(arquivo)) cluster = clusterDoState(JSON.parse(fs.readFileSync(arquivo, 'utf8')));
   } else throw new Error('Ação Terraform inválida.');
-  const vars = { ...jwt, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
+  const vars = { environment: env.SSM_ENVIRONMENT_NAME, ...jwt, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
   fs.writeFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), JSON.stringify(vars), { mode: 0o600 });
   fs.appendFileSync(env.GITHUB_OUTPUT, `ecr_image_uri=${imagem}\neks_cluster_name=${cluster}\n`);
 }

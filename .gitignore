@@ -17,3 +17,6 @@ override.tf.json
 *_override.tf.json
 *.auto.tfvars
 *.auto.tfvars.json
+
+# Contexto temporário de validação do destroy
+**/execucao-destroy-context.json
