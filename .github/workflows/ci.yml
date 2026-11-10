@@ -75,24 +75,22 @@ jobs:
         with:
           fetch-depth: 0
       - name: "📁 Bloquear pastas extras e diretórios de scripts"
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           node <<'VALIDAR_ESTRUTURA'
           const cp = require('node:child_process');
           const nomes = args => cp.execFileSync('git', args, { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
           const assert = require('node:assert/strict');
-          function foraDoPadrao(arquivos, base) {
-            const raizes = new Set(base.filter(nome => nome.includes('/')).map(nome => nome.split('/')[0]));
+          // Estrutura aprovada do projeto, válida também em promoções para branches antigas.
+          const raizes = new Set([".agents", ".github", "docs", "infra", "k8s", "src", "tests"]);
+          function foraDoPadrao(arquivos) {
             return arquivos.filter(nome => {
               const pastas = nome.split('/').slice(0, -1);
               return pastas.some(pasta => pasta.toLowerCase() === 'scripts') || (pastas.length > 0 && !raizes.has(pastas[0]));
             });
           }
-          assert.deepEqual(foraDoPadrao(['src/Caso/Novo.cs'], ['src/Existente.cs']), []);
-          assert.deepEqual(foraDoPadrao(['scripts/local.ps1', '.github/scripts/check.cjs', 'pasta-extra/arquivo'], ['src/Existente.cs', '.github/workflows/ci.yml']), ['scripts/local.ps1', '.github/scripts/check.cjs', 'pasta-extra/arquivo']);
-          const base = nomes(['ls-tree', '-r', '--name-only', process.env.BASE_SHA]);
-          const invalidos = foraDoPadrao(nomes(['ls-files']), base);
+          assert.deepEqual(foraDoPadrao(['src/Caso/Novo.cs']), []);
+          assert.deepEqual(foraDoPadrao(['scripts/local.ps1', '.github/scripts/check.cjs', 'pasta-extra/arquivo']), ['scripts/local.ps1', '.github/scripts/check.cjs', 'pasta-extra/arquivo']);
+          const invalidos = foraDoPadrao(nomes(['ls-files']));
           if (invalidos.length) throw new Error('Estrutura fora do padrão aprovado: ' + invalidos.join(', '));
           console.log('Estrutura existente preservada; nenhuma pasta de scripts versionada.');
           VALIDAR_ESTRUTURA
