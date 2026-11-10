@@ -24,6 +24,14 @@ public sealed class PreparacaoEstoque
         Itens = Array.AsReadOnly(itens);
     }
 
+    public static PreparacaoEstoque Reconstituir(Guid preparacaoId, Guid ordemServicoId, Guid filialId,
+        IEnumerable<ItemReserva> itens, bool cancelada)
+    {
+        ValidarIdentificadores(preparacaoId, ordemServicoId, filialId);
+        ArgumentNullException.ThrowIfNull(itens);
+        return new PreparacaoEstoque(preparacaoId, ordemServicoId, filialId, itens.ToArray()) { Cancelada = cancelada };
+    }
+
     public static PreparacaoEstoque Reservar(Guid preparacaoId, Guid ordemServicoId, Guid filialId,
         IEnumerable<ItemReserva> itens, IReadOnlyDictionary<Guid, ItemEstoque> estoqueDaFilial)
     {

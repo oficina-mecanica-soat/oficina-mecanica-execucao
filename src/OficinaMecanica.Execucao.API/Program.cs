@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using OficinaMecanica.Execucao.API;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -38,6 +39,8 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
         };
     });
 builder.Services.AddAuthorization();
+builder.Services.Configure<ProcessamentoLocalOptions>(builder.Configuration.GetSection("ProcessamentoLocal"));
+builder.Services.AddHostedService<ProcessamentoLocalWorker>();
 
 var app = builder.Build();
 app.UseAuthentication();

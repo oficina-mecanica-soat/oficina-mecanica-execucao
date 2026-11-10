@@ -22,6 +22,15 @@ public sealed class ItemEstoque
     public int QuantidadeDisponivel { get; private set; }
     public int QuantidadeReservada { get; private set; }
 
+    public static ItemEstoque Reconstituir(Guid id, Guid pecaInsumoCatalogoId, int disponivel, int reservada)
+    {
+        if (id == Guid.Empty || pecaInsumoCatalogoId == Guid.Empty)
+            throw new DomainException(EstoqueErrorMessages.PecaInsumoCatalogoObrigatorio);
+        if (disponivel < 0 || reservada < 0)
+            throw new DomainException(EstoqueErrorMessages.QuantidadeDisponivelNaoNegativa);
+        return new ItemEstoque(id, pecaInsumoCatalogoId, disponivel, reservada);
+    }
+
     public static ItemEstoque Criar(Guid pecaInsumoCatalogoId, int quantidadeDisponivel)
     {
         if (pecaInsumoCatalogoId == Guid.Empty)

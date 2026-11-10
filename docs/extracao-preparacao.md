@@ -1,45 +1,62 @@
-# F4-05 — primeiro incremento: regras locais de reserva e cancelamento
+# F4-05 — preparação e cancelamento persistentes
 
-## Fontes verificadas
+## Decisões aplicadas
 
-API em `4afed683e1e152bd24ddc16e7f5b0a003e26e432` (origin/develop após o PR #324). Os arquivos abaixo pertencem ao repositório `oficina-mecanica-api`; a extração não modifica o monólito.
+Fontes: ADR-0024/25/26 e RFC-0007, incluindo o ajuste de versão aprovado no [PR #325](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/325). `envelope.versao` permanece 1; `PrepararExecucao.dados.versao` identifica o snapshot gerenciado pela OS. Cancelamento resolve essa versão por `preparacaoId`. O serviço não consulta SQL da OS nem compartilha Domain/migrations.
 
-| Fonte | Regra preservada neste incremento |
+## Regras extraídas
+
+| Fonte no repositório da API | Comportamento preservado |
 | --- | --- |
-| `src/OficinaMecanica.Domain/GestaoEstoque/Entities/ItemEstoque.cs` | Quantidade positiva; disponível não negativo; reserva transfere disponível para reservado; estorno devolve; baixa consome reservado. Classe extraída para o Domain do Execução, sem dependência entre os projetos. |
-| `tests/OficinaMecanica.Domain.UnitTests/GestaoEstoque/Entities/ItemEstoqueTests.cs` | Os 19 testes existentes acompanham a regra extraída. |
-| `src/OficinaMecanica.Application/GestaoOrdemServico/OrdemServicoUseCases/AbrirOrdemServico/AbrirOrdemServicoValidator.cs` | Itens repetidos e quantidades inválidas são rejeitados. Solicitação sem peças é válida. |
-| `src/OficinaMecanica.Application/GestaoOrdemServico/OrdemServicoUseCases/AbrirOrdemServico/AbrirOrdemServicoUseCase.cs` | Verificar disponibilidade de todos os itens antes de reservar. Sem saldo ou item ausente não há reserva parcial. |
-| `src/OficinaMecanica.Application/GestaoOrdemServico/OrdemServicoUseCases/CancelarOrdemServico/CancelarOrdemServicoUseCase.cs` | Cancelamento devolve as quantidades reservadas. Falha de estoque impede confirmar a compensação. |
-| `src/OficinaMecanica.Domain/GestaoOrdemServico/Aggregates/OrdemServico.cs` | Iniciar diagnóstico muda o estado; não produz laudo textual automaticamente. Estados públicos de OS continuam no serviço de OS. |
-| ADR-0024/25/26 e RFC-0007 | Estoque físico no Execução; reserva atômica; compensação idempotente; nenhuma consulta ao banco de OS; falha de compensação não é sucesso. |
+| `src/OficinaMecanica.Domain/GestaoEstoque/Entities/ItemEstoque.cs` e seus 19 testes | Reserva transfere disponível para reservado; estorno devolve; baixa consome reservado; quantidades são validadas. |
+| `AbrirOrdemServicoValidator` | Peças repetidas e quantidades inválidas são rejeitadas; solicitação sem peças é válida. |
+| `AbrirOrdemServicoUseCase` | Verificar todos os saldos antes de reservar. Sem saldo/item não há reserva parcial. |
+| `CancelarOrdemServicoUseCase` | Falha de estoque impede confirmar a compensação. |
+| `OrdemServico.IniciarDiagnostico` | Não existe geração automática de laudo. O resultado desta preparação transporta o snapshot recebido de veículo, mecânico e serviços em `diagnostico`, sem inventar avaliação clínica/técnica. |
 
-## Comportamento implementado
+## Transação e idempotência
 
-`PreparacaoEstoque` guarda IDs de preparação/OS/filial e um snapshot somente leitura dos itens. Recebe saldos da filial obtidos pelo chamador. Valida todo o lote antes de reservar ou liberar; um item inválido impede alterar os demais. Cancelar novamente a mesma instância retorna sem liberar duas vezes. Preparação sem peças pode ser cancelada sem movimentação.
+O processador desserializa somente `PrepararExecucao` e `CancelarPreparacao` v1, valida os campos e grava estado, saldos, reservas, deduplicação e outbox via uma única transação DynamoDB. Leituras são consistentes e todas as revisões lidas entram como condições do commit, inclusive saldos ausentes numa recusa. Conflito provoca releitura; falha técnica não se transforma em recusa de estoque.
 
-Essa garantia é de domínio **em memória**. Persistência de preparação, saldos, deduplicação e outbox precisa ocorrer numa única transação DynamoDB com condições de concorrência. Esta classe não implementa confirmação de mensagem nem publicação. Não há consumer habilitado, endpoint novo, banco compartilhado ou alteração do Gateway. Não foi implementada execução física, nem cancelamento após seu início.
+A operação é identificada por tipo + OS + versão de negócio; o hash compara os dados de negócio, com itens ordenados e valores decimal normalizados sem arredondamento. Metadados de transporte não mudam o snapshot. Reentrega devolve o resultado persistido, sem nova movimentação nem outra outbox. Reutilizar mensagemId para outra operação ou repetir a chave com payload diferente é conflito de contrato.
 
-## Ponto de contrato a esclarecer antes dos handlers
+Uma nova preparação só é aceita com versão maior e sem preparação anterior ativa. Versão antiga/cancelada não reabre estoque. Cancelamento valida as reservas persistidas, resolve a versão pelo ID e libera saldos/estado atomicamente. ID ainda desconhecido mantém o comando pendente de recuperação, sem anunciar compensação. Repetir cancelamento antigo depois de preparar outra versão preserva a reserva atual.
 
-A RFC-0007 contém, sim, o contrato de mensagens: envelope, dados mínimos, tipos e fluxo. Não é necessário reinventá-lo. A dúvida está na distinção entre duas versões:
+## Modelo DynamoDB deste incremento
 
-| Trecho da RFC | Definição existente |
-| --- | --- |
-| Envelope | `versao = 1` para o contrato da mensagem. |
-| Idempotência de negócio | Chave operação + OS + versão, além de `mensagemId`. |
-| `PrepararExecucao` | `filialId`, `veiculoId`, `mecanicoId`, `itens`, `servicos`; não há versão explícita nos dados mínimos. |
-| `ExecucaoPreparada` | Devolve `preparacaoId` e `versao`. |
-| `CancelarPreparacao` | Já referencia `preparacaoId`; esse identificador pode localizar a versão persistida, sem acrescentar campo ao comando. |
+Uma tabela com PK/SK string, `revisao` numérica e `conteudo` JSON. Revisão técnica não é versão da preparação. A tabela real ainda será provisionada na F4-04; testes e Compose criam somente tabela em endpoint local.
 
-Os documentos e o código versionado consultados não esclarecem se a versão da chave é a versão fixa do envelope ou a versão de negócio da preparação. Usar uma como a outra silenciosamente pode deduplicar indevidamente uma preparação posterior da mesma OS. Nenhum campo novo foi acrescentado à RFC ou implementado no protocolo neste incremento.
+| PK | SK | Acesso/ownership |
+| --- | --- | --- |
+| `ESTOQUE#{filialId}` | `ITEM#{itemId}` | Saldo por filial e item; ItemId corresponde à peça/insumo do catálogo. |
+| `OS#{ordemServicoId}` | `ATUAL` | Versão atual e barreira para preparações concorrentes da mesma OS. |
+| `OS#{ordemServicoId}` | `PREPARACAO#{versao}` | Snapshot e estado da preparação; histórico preservado. |
+| `OS#{ordemServicoId}` | `RESERVA#{itemId}#{versao}` | Reserva por OS/item/versão, com marcador de liberação. |
+| `PREPARACAO#{preparacaoId}` | `REFERENCIA` | Resolução direta de OS/versão no cancelamento. |
+| `OS#{ordemServicoId}` | `OPERACAO#{tipo}#{versao}` | Hash e resultado imutável de cada operação. |
+| `MENSAGEM#{mensagemId}` | `RECEBIDA` | Deduplicação do transporte, confirmada com o estado de negócio. |
+| `OUTBOX#CONTROLE` | `SEQUENCIA` | Sequência transacional que preserva a ordem de commit dos resultados. |
+| `OUTBOX#PENDENTE` | `{sequencia}#{mensagemId}` | Query ordenada, sem Scan; primeira pendência recebe lease antes do envio. |
+| `OUTBOX#ENVIADA` | `{sequencia}#{mensagemId}` | Histórico após confirmação do transporte. |
 
-Se a intenção for versionar preparações da mesma OS, proposta para revisão conjunta: informar `dados.versao` em `PrepararExecucao`, diferenciá-la de `envelope.versao`, e devolver a mesma versão em `ExecucaoPreparada`. `CancelarPreparacao` pode permanecer como está, resolvendo versão por `preparacaoId`. A proposta não é uma decisão aprovada e não deve ser consumida pela outra frente antes de alinhamento.
+Versões e sequência usam preenchimento numérico para ordenação lexicográfica. Limite técnico atual: **46 itens distintos por preparação**; são sete registros fixos mais saldo/reserva por item, totalizando até 99 ações. Lotes maiores são rejeitados para investigação, sem reserva parcial; não são divididos em transações que perderiam atomicidade. A [API DynamoDB limita a transação a 100 ações e 4 MB](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html).
 
-## Continuação após esclarecimento
+## Outbox e transporte substituível
 
-Implementar os use cases/handlers com o contrato acordado; gravar estado, saldos, deduplicação e outbox atomicamente; testar duplicatas com novo `mensagemId`, concorrência entre OS, resultado tardio e reinício. Adicionar DynamoDB Local e adaptador de mensagens para testes de processo. Manter AWS desligada e F4-04 pendente até a validação real pelas esteiras.
+`PublicadorOutbox` é executado por BackgroundService no modo local. A sequência de commit impede inverter preparação/cancelamento mesmo no mesmo instante. Lease dura 60 segundos; disputa pela mesma pendência não publica em paralelo. Falha do transporte persiste tentativa, código sanitizado e backoff exponencial até 300 segundos. Após envio, falha antes da marcação permite reenviar a **mesma mensagem**, sem inventar exactly-once. A lease expira e outro processo pode retomar. O consumidor futuro precisa manter idempotência, como exige a RFC.
 
-## Validação local em 10/11/2026
+A publicação neste incremento é serializada globalmente; a primeira pendência em backoff bloqueia as seguintes. É uma escolha simples para preservar ordem no volume acadêmico, com gargalo e fila bloqueada visíveis nos registros. Paralelização por OS e alertas operacionais devem ser avaliados com medições na F4-11; não há alegação de throughput validado.
 
-Build Release sem avisos/erros; formatação verificada; 49 testes aprovados, zero ignorados (38 de domínio e 11 da base API); cobertura consolidada por arquivo/linha de 98,62% (143/145 linhas). Inclui os testes de estoque que acompanharam a extração e novos cenários de lote, cancelamento repetido, falha antes de liberar e retomada da mesma instância após reposição do saldo ausente. Não é evidência de reinício de processo, concorrência DynamoDB, SQS ou recuperação persistente; essas verificações seguem pendentes.
+O worker local lê arquivos e só arquiva após commit. Mensagens malformadas/tipos desconhecidos vão para investigação local, sem processamento permissivo. Uma entrada temporariamente bloqueada não impede publicar outbox já confirmada. O transporte de saída grava arquivo de forma atômica por mensagemId. Esses adaptadores não implementam nem comprovam FIFO, DLQ, visibility timeout, IAM ou SQS real.
+
+## Execução e validação
+
+Consulte o README para Compose e `scripts/validar-fluxo-local.ps1`. O script usa exclusivamente `http://127.0.0.1:8000`, semeia um item com saldo 10, prepara três unidades, reinicia a API e reentrega; cancela, reinicia e reentrega o cancelamento. O saldo final volta a 10 disponíveis/0 reservados. Evidências locais ficam em `.local/mensagens`; containers são encerrados ao final. O DynamoDB Local do Compose é em memória: reiniciar API preserva dados, encerrar DynamoDB os remove. Não é evidência de durabilidade ou permissões AWS.
+
+Os testes de integração criam DynamoDB Local temporário via Testcontainers, exigem Docker e nunca são ignorados. Cobrem concorrência por último saldo e pela mesma operação, versões sucessivas, compensação interrompida, falha atômica, commit antes do envio, envio antes da confirmação, leases, backoff e investigação de contratos inválidos. A dependência transitiva de testes SSH.NET foi fixada em [2026.0.0](https://github.com/sshnet/SSH.NET/releases/tag/2026.0.0), sem suprimir avisos de segurança do build.
+
+## Limites da entrega
+
+Evidência local em 10/11/2026: restore/build Release e formato aprovados, zero avisos/erros; **114 testes aprovados, zero ignorados**, sendo 38 de domínio, 11 da base API e 65 de integração; **96,38% de cobertura consolidada de linhas** (533/553). O script Compose também passou com estoque 10→7/3→10/0 e dois reinícios reais da API. Containers e rede locais encerrados; arquivos de demonstração preservados fora do Git. O CI deve repetir os testes e manter o gate de 90% antes do merge.
+
+Este incremento conclui o fluxo local de preparação/cancelamento, não a F4-05 inteira. Autorizar execução, início/finalização física, métricas Datadog, consumidor/publicador SQS, tabelas/filas/SSM reais, integração da Saga e políticas HTTP permanecem nas tarefas seguintes. O worker por arquivos é opt-in e recusa ambiente diferente de Development. O workload AWS atual continua sem consumidor remoto habilitado. Nenhum apply/deploy foi executado, nem a AWS foi religada.

@@ -2,6 +2,7 @@
 **/obj
 .git
 .tools
+.local
 .env
 TestResults
 tests

@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.107.3" />
     <ProjectReference Include="../OficinaMecanica.Execucao.Application/OficinaMecanica.Execucao.Application.csproj" />
   </ItemGroup>
 </Project>
