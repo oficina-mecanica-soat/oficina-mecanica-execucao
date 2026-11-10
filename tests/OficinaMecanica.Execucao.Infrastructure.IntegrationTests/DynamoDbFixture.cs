@@ -1,3 +1,4 @@
+using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using Amazon.DynamoDBv2;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;

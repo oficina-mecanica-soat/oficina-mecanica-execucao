@@ -9,10 +9,20 @@ Fontes: ADR-0024/25/26 e RFC-0007, incluindo o ajuste de versão aprovado no [PR
 | Fonte no repositório da API | Comportamento preservado |
 | --- | --- |
 | `src/OficinaMecanica.Domain/GestaoEstoque/Entities/ItemEstoque.cs` e seus 19 testes | Reserva transfere disponível para reservado; estorno devolve; baixa consome reservado; quantidades são validadas. |
+| `src/OficinaMecanica.Domain/GestaoEstoque/Aggregates/Estoque.cs` e seus 21 testes | Agregado dono dos itens; consulta disponibilidade, reserva e estorna por seus métodos existentes. Reconstituição local identifica o estoque pela filial; não compartilha o projeto Domain. |
 | `AbrirOrdemServicoValidator` | Peças repetidas e quantidades inválidas são rejeitadas; solicitação sem peças é válida. |
 | `AbrirOrdemServicoUseCase` | Verificar todos os saldos antes de reservar. Sem saldo/item não há reserva parcial. |
 | `CancelarOrdemServicoUseCase` | Falha de estoque impede confirmar a compensação. |
 | `OrdemServico.IniciarDiagnostico` | Não existe geração automática de laudo. O resultado desta preparação transporta o snapshot recebido de veículo, mecânico e serviços em `diagnostico`, sem inventar avaliação clínica/técnica. |
+
+## Organização das camadas
+
+- Domain: `Estoque`, `ItemEstoque`, `IEstoqueRepository` e regras de preparação/compensação. O agregado e seus testes foram extraídos da API; não há dependência entre os projetos Domain dos serviços.
+- Application: `PrepararExecucao` e `CancelarPreparacao` têm Request, Response, Validator e UseCase próprios. O processador de mensagens valida o envelope e encaminha ao caso de uso. `IUnidadeTrabalhoPreparacao` expõe uma sessão tipada de preparação; não expõe tabela, chave física, revisão, JSON de armazenamento ou API DynamoDB. A Application coordena as regras e solicita o registro do resultado na mesma unidade de trabalho.
+- Infrastructure: implementação da unidade de trabalho, repositório de estoque, documentos e chaves DynamoDB, condições/repetição por concorrência, gravação de deduplicação/outbox e publicação. `ProcessamentoLocalWorker` também pertence a esta camada e resolve os casos de uso por injeção de dependência.
+- API: configuração HTTP/JWT/healthcheck e composição das dependências com `AddApplication`/`AddInfrastructure`.
+
+Testes unitários próprios de Application verificam preparação, recusa, versões, reentrega, cancelamento e falhas de compensação com portas simuladas. Os testes de integração continuam comprovando a transação no DynamoDB Local; os testes unitários não substituem essa evidência.
 
 ## Transação e idempotência
 
@@ -57,6 +67,6 @@ Os testes de integração criam DynamoDB Local temporário via Testcontainers, e
 
 ## Limites da entrega
 
-Evidência local em 10/11/2026: restore/build Release e formato aprovados, zero avisos/erros; **114 testes aprovados, zero ignorados**, sendo 38 de domínio, 11 da base API e 65 de integração; **96,38% de cobertura consolidada de linhas** (533/553). O script Compose também passou com estoque 10→7/3→10/0 e dois reinícios reais da API. Containers e rede locais encerrados; arquivos de demonstração preservados fora do Git. O CI deve repetir os testes e manter o gate de 90% antes do merge.
+Evidência local da reorganização em 10/11/2026: restore/build Release e formato aprovados, zero avisos/erros; **147 testes aprovados, zero ignorados**, sendo 59 de domínio (incluindo os 21 testes extraídos de `Estoque`), 12 unitários de Application, 11 da base API e 65 de integração. Cobertura local consolidada por classe/linha: **96,62%** (629/651); o relatório consolidado do CI é a evidência do gate antes do merge. O script Compose passou novamente após a reorganização, comprovando estoque 10→7/3→10/0 e dois reinícios reais da API. Os dados de demonstração ficaram fora do Git; containers e rede foram encerrados pelo script.
 
 Este incremento conclui o fluxo local de preparação/cancelamento, não a F4-05 inteira. Autorizar execução, início/finalização física, métricas Datadog, consumidor/publicador SQS, tabelas/filas/SSM reais, integração da Saga e políticas HTTP permanecem nas tarefas seguintes. O worker por arquivos é opt-in e recusa ambiente diferente de Development. O workload AWS atual continua sem consumidor remoto habilitado. Nenhum apply/deploy foi executado, nem a AWS foi religada.

@@ -1,3 +1,4 @@
+using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using System.Text.Json;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Persistencia;

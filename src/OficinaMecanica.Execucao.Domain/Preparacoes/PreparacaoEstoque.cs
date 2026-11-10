@@ -1,4 +1,4 @@
-using OficinaMecanica.Execucao.Domain.GestaoEstoque.Entities;
+using OficinaMecanica.Execucao.Domain.GestaoEstoque.Aggregates;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Messages;
 using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
 
@@ -33,7 +33,7 @@ public sealed class PreparacaoEstoque
     }
 
     public static PreparacaoEstoque Reservar(Guid preparacaoId, Guid ordemServicoId, Guid filialId,
-        IEnumerable<ItemReserva> itens, IReadOnlyDictionary<Guid, ItemEstoque> estoqueDaFilial)
+        IEnumerable<ItemReserva> itens, Estoque estoqueDaFilial)
     {
         ValidarIdentificadores(preparacaoId, ordemServicoId, filialId);
         ArgumentNullException.ThrowIfNull(itens);
@@ -47,20 +47,20 @@ public sealed class PreparacaoEstoque
         // Valida todos os itens antes de alterar qualquer saldo, como na abertura da OS.
         foreach (var item in solicitados)
         {
-            if (!estoqueDaFilial.TryGetValue(item.ItemId, out var saldo)
-                || !saldo.PossuiDisponibilidade(item.Quantidade))
+            if (!estoqueDaFilial.VerificarDisponibilidade(item.ItemId, item.Quantidade))
                 throw new DomainException(EstoqueErrorMessages.EstoqueInsuficiente);
+            var saldo = estoqueDaFilial.ObterItem(item.ItemId);
             if (saldo.QuantidadeReservada > int.MaxValue - item.Quantidade)
                 throw new DomainException("Quantidade reservada excede o limite suportado.");
         }
 
         foreach (var item in solicitados)
-            estoqueDaFilial[item.ItemId].Reservar(item.Quantidade);
+            estoqueDaFilial.ReservarItens(item.ItemId, item.Quantidade);
 
         return new PreparacaoEstoque(preparacaoId, ordemServicoId, filialId, solicitados);
     }
 
-    public bool Cancelar(IReadOnlyDictionary<Guid, ItemEstoque> estoqueDaFilial)
+    public bool Cancelar(Estoque estoqueDaFilial)
     {
         ArgumentNullException.ThrowIfNull(estoqueDaFilial);
         if (Cancelada)
@@ -69,8 +69,7 @@ public sealed class PreparacaoEstoque
         // Falha em qualquer item impede liberação parcial e mantém a compensação pendente.
         foreach (var item in Itens)
         {
-            if (!estoqueDaFilial.TryGetValue(item.ItemId, out var saldo))
-                throw new DomainException(EstoqueErrorMessages.ItemNaoEncontrado);
+            var saldo = estoqueDaFilial.ObterItem(item.ItemId);
             if (saldo.QuantidadeReservada < item.Quantidade)
                 throw new DomainException(EstoqueErrorMessages.QuantidadeReservadaInsuficiente);
             if (saldo.QuantidadeDisponivel > int.MaxValue - item.Quantidade)
@@ -78,7 +77,7 @@ public sealed class PreparacaoEstoque
         }
 
         foreach (var item in Itens)
-            estoqueDaFilial[item.ItemId].Estornar(item.Quantidade);
+            estoqueDaFilial.EstornarItens(item.ItemId, item.Quantidade);
 
         Cancelada = true;
         return true;

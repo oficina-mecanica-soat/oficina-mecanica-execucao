@@ -2,7 +2,6 @@ using System.Globalization;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using OficinaMecanica.Execucao.Application.Mensagens;
-using OficinaMecanica.Execucao.Application.Persistencia;
 
 namespace OficinaMecanica.Execucao.Infrastructure.Persistencia;
 

@@ -1,3 +1,4 @@
+using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using System.Text.Json;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Persistencia;
@@ -113,7 +114,7 @@ public sealed class PreparacaoPersistenteTests(DynamoDbFixture fixture) : IClass
         var comando = cenario.Comando("PrepararExecucao", cenario.Dados());
         var primeira = await cenario.EnviarAsync(comando);
         using var novoClient = fixture.CriarClient();
-        var novo = new ProcessadorPreparacao(new ArmazenamentoDynamoDb(novoClient, cenario.Tabela), cenario.Relogio);
+        var novo = CenarioPreparacao.CriarProcessador(new ArmazenamentoDynamoDb(novoClient, cenario.Tabela), cenario.Relogio);
 
         var segunda = await cenario.EnviarAsync(comando with { MensagemId = Guid.NewGuid() }, novo);
 
@@ -188,7 +189,7 @@ public sealed class PreparacaoPersistenteTests(DynamoDbFixture fixture) : IClass
         var cancelar = cenario.Comando("CancelarPreparacao", new CancelarPreparacao(id, "Recusado"));
         var primeira = await cenario.EnviarAsync(cancelar);
         using var client = fixture.CriarClient();
-        var processador = new ProcessadorPreparacao(new ArmazenamentoDynamoDb(client, cenario.Tabela), cenario.Relogio);
+        var processador = CenarioPreparacao.CriarProcessador(new ArmazenamentoDynamoDb(client, cenario.Tabela), cenario.Relogio);
 
         var segunda = await cenario.EnviarAsync(cancelar with { MensagemId = Guid.NewGuid() }, processador);
         var tardia = await cenario.EnviarAsync(preparar with { MensagemId = Guid.NewGuid() }, processador);

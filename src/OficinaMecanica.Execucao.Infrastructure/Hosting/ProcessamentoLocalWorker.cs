@@ -1,10 +1,13 @@
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
+using Amazon.DynamoDBv2;
 using OficinaMecanica.Execucao.Application.Mensagens;
-using OficinaMecanica.Execucao.Application.Preparacoes;
 using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using OficinaMecanica.Execucao.Infrastructure.Persistencia;
 
-namespace OficinaMecanica.Execucao.API;
+namespace OficinaMecanica.Execucao.Infrastructure.Hosting;
 
 public sealed class ProcessamentoLocalOptions
 {
@@ -15,7 +18,7 @@ public sealed class ProcessamentoLocalOptions
 }
 
 public sealed class ProcessamentoLocalWorker(IOptions<ProcessamentoLocalOptions> options,
-    IHostEnvironment ambiente, ILogger<ProcessamentoLocalWorker> logger) : BackgroundService
+    IHostEnvironment ambiente, ILogger<ProcessamentoLocalWorker> logger, IServiceScopeFactory scopeFactory) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -25,7 +28,8 @@ public sealed class ProcessamentoLocalWorker(IOptions<ProcessamentoLocalOptions>
         if (!ambiente.IsDevelopment())
             throw new InvalidOperationException("Processamento por arquivos é exclusivo do ambiente Development.");
 
-        using var client = DynamoDbLocal.CriarClient(config.Endpoint);
+        using var scope = scopeFactory.CreateScope();
+        var client = scope.ServiceProvider.GetRequiredService<AmazonDynamoDBClient>();
         for (var tentativa = 0; ; tentativa++)
         {
             try
@@ -38,11 +42,8 @@ public sealed class ProcessamentoLocalWorker(IOptions<ProcessamentoLocalOptions>
                 await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
             }
         }
-        var armazenamento = new ArmazenamentoDynamoDb(client, config.Tabela);
-        var processador = new ProcessadorPreparacao(armazenamento, TimeProvider.System);
-        var consumidor = new ConsumidorArquivos(processador, config.Diretorio);
-        var publicador = new PublicadorOutbox(armazenamento,
-            new TransporteArquivos(Path.Combine(config.Diretorio, "saida")), TimeProvider.System);
+        var consumidor = scope.ServiceProvider.GetRequiredService<ConsumidorArquivos>();
+        var publicador = scope.ServiceProvider.GetRequiredService<PublicadorOutbox>();
 
         while (!stoppingToken.IsCancellationRequested)
         {

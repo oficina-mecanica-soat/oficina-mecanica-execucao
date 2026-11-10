@@ -1,6 +1,6 @@
 using OficinaMecanica.Execucao.Application.Mensagens;
 
-namespace OficinaMecanica.Execucao.Application.Persistencia;
+namespace OficinaMecanica.Execucao.Infrastructure.Persistencia;
 
 public sealed record ChaveRegistro(string Particao, string Ordenacao);
 public sealed record Registro(ChaveRegistro Chave, long Revisao, string? Json)

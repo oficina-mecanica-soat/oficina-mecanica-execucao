@@ -1,3 +1,4 @@
+using OficinaMecanica.Execucao.Infrastructure.Persistencia;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Persistencia;
 using OficinaMecanica.Execucao.Application.Preparacoes;
@@ -102,7 +103,7 @@ public sealed class OutboxEArquivosTests(DynamoDbFixture fixture) : IClassFixtur
         Assert.True(await consumidor.ProcessarProximaAsync());
         await File.WriteAllTextAsync(Path.Combine(entrada, "02.json"), JsonContrato.Serializar(mensagem));
 
-        Assert.True(await new ConsumidorArquivos(new ProcessadorPreparacao(cenario.Armazenamento, cenario.Relogio), pasta.Caminho).ProcessarProximaAsync());
+        Assert.True(await new ConsumidorArquivos(CenarioPreparacao.CriarProcessador(cenario.Armazenamento, cenario.Relogio), pasta.Caminho).ProcessarProximaAsync());
         Assert.False(await consumidor.ProcessarProximaAsync());
 
         Assert.Equal(2, Directory.GetFiles(Path.Combine(pasta.Caminho, "processadas"), "*.json").Length);
@@ -139,7 +140,7 @@ public sealed class OutboxEArquivosTests(DynamoDbFixture fixture) : IClassFixtur
         await File.WriteAllTextAsync(arquivo, JsonContrato.Serializar(cenario.Comando("PrepararExecucao", cenario.Dados() with { Itens = [] })));
         var armazenamento = new ArmazenamentoComFalha(cenario.Armazenamento) { FalharConfirmacaoNumero = 1 };
 
-        await Assert.ThrowsAsync<IOException>(() => new ConsumidorArquivos(new(armazenamento, cenario.Relogio), pasta.Caminho).ProcessarProximaAsync());
+        await Assert.ThrowsAsync<IOException>(() => new ConsumidorArquivos(CenarioPreparacao.CriarProcessador(armazenamento, cenario.Relogio), pasta.Caminho).ProcessarProximaAsync());
 
         Assert.True(File.Exists(arquivo));
         Assert.Null(await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default));

@@ -1,4 +1,5 @@
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Entities;
+using OficinaMecanica.Execucao.Domain.GestaoEstoque.Aggregates;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Messages;
 using OficinaMecanica.Execucao.Domain.Preparacoes;
 using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
@@ -19,8 +20,8 @@ public sealed class PreparacaoEstoqueTests
         Assert.Equal(3, primeiro.QuantidadeReservada);
         Assert.Equal(3, segundo.QuantidadeDisponivel);
         Assert.Equal(2, segundo.QuantidadeReservada);
-        Assert.True(preparacao.Cancelar(saldos));
-        Assert.False(preparacao.Cancelar(saldos));
+        Assert.True(preparacao.Cancelar(Estoque.Criar(saldos.Values)));
+        Assert.False(preparacao.Cancelar(Estoque.Criar(saldos.Values)));
         Assert.True(preparacao.Cancelada);
         Assert.Equal(10, primeiro.QuantidadeDisponivel);
         Assert.Equal(5, segundo.QuantidadeDisponivel);
@@ -59,7 +60,7 @@ public sealed class PreparacaoEstoqueTests
         else
             segundo.Baixar(2);
 
-        Assert.Throws<DomainException>(() => preparacao.Cancelar(saldos));
+        Assert.Throws<DomainException>(() => preparacao.Cancelar(Estoque.Criar(saldos.Values)));
 
         Assert.False(preparacao.Cancelada);
         Assert.Equal(7, primeiro.QuantidadeDisponivel);
@@ -75,8 +76,8 @@ public sealed class PreparacaoEstoqueTests
         Assert.NotEqual(Guid.Empty, preparacao.OrdemServicoId);
         Assert.NotEqual(Guid.Empty, preparacao.FilialId);
         Assert.Empty(preparacao.Itens);
-        Assert.True(preparacao.Cancelar(Saldos()));
-        Assert.False(preparacao.Cancelar(Saldos()));
+        Assert.True(preparacao.Cancelar(Estoque.Criar([])));
+        Assert.False(preparacao.Cancelar(Estoque.Criar([])));
     }
 
     [Fact]
@@ -126,7 +127,7 @@ public sealed class PreparacaoEstoqueTests
         var ids = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
         ids[indice] = Guid.Empty;
 
-        Assert.Throws<DomainException>(() => PreparacaoEstoque.Reservar(ids[0], ids[1], ids[2], [], Saldos()));
+        Assert.Throws<DomainException>(() => PreparacaoEstoque.Reservar(ids[0], ids[1], ids[2], [], Estoque.Criar([])));
     }
 
     [Fact]
@@ -150,12 +151,12 @@ public sealed class PreparacaoEstoqueTests
         var saldo = ItemEstoque.Criar(Guid.NewGuid(), 10);
         var preparacao = Reservar([new(saldo.PecaInsumoCatalogoId, 3)], Saldos(saldo));
         var saldos = Saldos();
-        Assert.Throws<DomainException>(() => preparacao.Cancelar(saldos));
+        Assert.Throws<DomainException>(() => preparacao.Cancelar(Estoque.Criar(saldos.Values)));
 
         saldos.Add(saldo.PecaInsumoCatalogoId, saldo);
 
-        Assert.True(preparacao.Cancelar(saldos));
-        Assert.False(preparacao.Cancelar(saldos));
+        Assert.True(preparacao.Cancelar(Estoque.Criar(saldos.Values)));
+        Assert.False(preparacao.Cancelar(Estoque.Criar(saldos.Values)));
         Assert.Equal(10, saldo.QuantidadeDisponivel);
         Assert.Equal(0, saldo.QuantidadeReservada);
     }
@@ -180,7 +181,7 @@ public sealed class PreparacaoEstoqueTests
         var preparacao = Reservar([new(saldo.PecaInsumoCatalogoId, 1)], Saldos(saldo));
         saldo.AtualizarQuantidadeDisponivel(int.MaxValue);
 
-        Assert.Throws<DomainException>(() => preparacao.Cancelar(Saldos(saldo)));
+        Assert.Throws<DomainException>(() => preparacao.Cancelar(Estoque.Criar([saldo])));
 
         Assert.False(preparacao.Cancelada);
         Assert.Equal(1, saldo.QuantidadeReservada);
@@ -188,7 +189,7 @@ public sealed class PreparacaoEstoqueTests
     }
 
     private static PreparacaoEstoque Reservar(IEnumerable<ItemReserva> itens, IReadOnlyDictionary<Guid, ItemEstoque> saldos)
-        => PreparacaoEstoque.Reservar(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), itens, saldos);
+        => PreparacaoEstoque.Reservar(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), itens, saldos is null ? null! : Estoque.Criar(saldos.Values));
 
     private static Dictionary<Guid, ItemEstoque> Saldos(params ItemEstoque[] itens)
         => itens.ToDictionary(item => item.PecaInsumoCatalogoId);

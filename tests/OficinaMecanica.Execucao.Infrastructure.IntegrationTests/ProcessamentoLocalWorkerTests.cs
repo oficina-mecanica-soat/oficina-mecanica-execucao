@@ -1,8 +1,13 @@
+using OficinaMecanica.Execucao.Infrastructure.Mensagens;
+using OficinaMecanica.Execucao.Infrastructure.Persistencia;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using OficinaMecanica.Execucao.API;
+using OficinaMecanica.Execucao.Infrastructure.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using OficinaMecanica.Execucao.Application;
 using OficinaMecanica.Execucao.Application.Mensagens;
 
 namespace OficinaMecanica.Execucao.Infrastructure.IntegrationTests;
@@ -18,13 +23,14 @@ public sealed class ProcessamentoLocalWorkerTests(DynamoDbFixture fixture) : ICl
         Directory.CreateDirectory(Path.Combine(pasta.Caminho, "entrada"));
         var arquivo = Path.Combine(pasta.Caminho, "entrada", "cancelamento-pendente.json");
         await File.WriteAllTextAsync(arquivo, JsonContrato.Serializar(cenario.Comando("CancelarPreparacao", new CancelarPreparacao(Guid.NewGuid(), "Recusa"))));
+        using var provider = CriarProvider(cenario, pasta);
         using var worker = new ProcessamentoLocalWorker(Options.Create(new ProcessamentoLocalOptions
         {
             Habilitado = true,
             Endpoint = fixture.Endpoint,
             Tabela = cenario.Tabela,
             Diretorio = pasta.Caminho
-        }), new AmbienteTeste(), NullLogger<ProcessamentoLocalWorker>.Instance);
+        }), new AmbienteTeste(), NullLogger<ProcessamentoLocalWorker>.Instance, provider.GetRequiredService<IServiceScopeFactory>());
         await worker.StartAsync(default);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
@@ -53,7 +59,8 @@ public sealed class ProcessamentoLocalWorkerTests(DynamoDbFixture fixture) : ICl
             Tabela = cenario.Tabela,
             Diretorio = pasta.Caminho
         });
-        using var worker = new ProcessamentoLocalWorker(options, new AmbienteTeste(), NullLogger<ProcessamentoLocalWorker>.Instance);
+        using var provider = CriarProvider(cenario, pasta);
+        using var worker = new ProcessamentoLocalWorker(options, new AmbienteTeste(), NullLogger<ProcessamentoLocalWorker>.Instance, provider.GetRequiredService<IServiceScopeFactory>());
         await worker.StartAsync(default);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
@@ -70,12 +77,24 @@ public sealed class ProcessamentoLocalWorkerTests(DynamoDbFixture fixture) : ICl
     [Fact]
     public async Task Dado_AmbienteProduction_Quando_HabilitarArquivos_Entao_RecusaModoLocal()
     {
+        using var provider = new ServiceCollection().BuildServiceProvider();
         using var worker = new ProcessamentoLocalWorker(Options.Create(new ProcessamentoLocalOptions { Habilitado = true }),
-            new AmbienteTeste { EnvironmentName = Environments.Production }, NullLogger<ProcessamentoLocalWorker>.Instance);
+            new AmbienteTeste { EnvironmentName = Environments.Production }, NullLogger<ProcessamentoLocalWorker>.Instance, provider.GetRequiredService<IServiceScopeFactory>());
         await worker.StartAsync(default);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => worker.ExecuteTask!);
     }
+    private ServiceProvider CriarProvider(CenarioPreparacao cenario, PastaTemporaria pasta)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ProcessamentoLocal:Endpoint"] = fixture.Endpoint,
+            ["ProcessamentoLocal:Tabela"] = cenario.Tabela,
+            ["ProcessamentoLocal:Diretorio"] = pasta.Caminho
+        }).Build();
+        return new ServiceCollection().AddApplication().AddInfrastructure(configuration).BuildServiceProvider();
+    }
+
 }
 
 internal sealed class AmbienteTeste : IHostEnvironment

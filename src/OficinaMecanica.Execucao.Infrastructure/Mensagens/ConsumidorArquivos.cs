@@ -1,5 +1,4 @@
 using OficinaMecanica.Execucao.Application.Mensagens;
-using OficinaMecanica.Execucao.Application.Preparacoes;
 using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
 
 namespace OficinaMecanica.Execucao.Infrastructure.Mensagens;

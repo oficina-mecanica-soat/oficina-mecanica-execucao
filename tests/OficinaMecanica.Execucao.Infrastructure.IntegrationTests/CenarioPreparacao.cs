@@ -1,3 +1,4 @@
+using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using System.Text.Json;
 using Amazon.DynamoDBv2;
 using OficinaMecanica.Execucao.Application.Mensagens;
@@ -25,7 +26,14 @@ internal sealed class CenarioPreparacao : IDisposable
     {
         _client = client;
         Armazenamento = new(client, Tabela);
-        Processador = new(Armazenamento, Relogio);
+        Processador = CriarProcessador(Armazenamento, Relogio);
+    }
+
+    public static ProcessadorPreparacao CriarProcessador(IArmazenamentoExecucao armazenamento, TimeProvider relogio)
+    {
+        var unidade = new UnidadeTrabalhoPreparacaoDynamoDb(armazenamento);
+        return new(new(unidade, new Application.Preparacoes.PrepararExecucao.PrepararExecucaoValidator(), relogio),
+            new(unidade, new Application.Preparacoes.CancelarPreparacao.CancelarPreparacaoValidator(), relogio));
     }
 
     public static async Task<CenarioPreparacao> CriarAsync(DynamoDbFixture fixture)

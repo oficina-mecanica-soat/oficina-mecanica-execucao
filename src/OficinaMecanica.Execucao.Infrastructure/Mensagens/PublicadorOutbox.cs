@@ -1,11 +1,7 @@
-using OficinaMecanica.Execucao.Application.Persistencia;
+using OficinaMecanica.Execucao.Application.Mensagens;
+using OficinaMecanica.Execucao.Infrastructure.Persistencia;
 
-namespace OficinaMecanica.Execucao.Application.Mensagens;
-
-public interface ITransporteResultado
-{
-    Task PublicarAsync(Mensagem mensagem, CancellationToken cancellationToken);
-}
+namespace OficinaMecanica.Execucao.Infrastructure.Mensagens;
 
 public sealed class PublicadorOutbox(IArmazenamentoExecucao armazenamento, ITransporteResultado transporte, TimeProvider relogio)
 {
