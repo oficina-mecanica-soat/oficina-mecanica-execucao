@@ -353,6 +353,8 @@ jobs:
       - run: terraform fmt -check -recursive infra/terraform
       - run: terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
       - run: terraform -chdir=infra/terraform/environments/dev validate
+      - name: "🧪 Validar contratos Terraform com providers simulados"
+        run: terraform -chdir=infra/terraform/environments/dev test
 
   quality_gate:
     name: "🚦 07 · Quality gate"

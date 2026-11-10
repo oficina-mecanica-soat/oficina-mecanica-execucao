@@ -73,7 +73,7 @@ test('destroy prepara apenas os dados locais sem consultar SSM/ECR nem exigir JW
   const dir = fs.mkdtempSync(prefix);
   try {
     fs.writeFileSync(path.join(dir, 'terraform.tfstate'), JSON.stringify({ resources: [{ mode: 'data', type: 'aws_eks_cluster', instances: [{ attributes: { name: 'cluster-no-state' } }] }] }));
-    const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'destroy', TF_VAR_kubeconfig_path: 'local' };
+    const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'destroy', SSM_ENVIRONMENT_NAME: 'development', TF_VAR_kubeconfig_path: 'local' };
     main({ env, consultarAws: () => { throw new Error('Destroy não deve consultar contratos de plataforma'); } });
     const vars = JSON.parse(fs.readFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), 'utf8'));
     assert.equal(vars.cluster_name, 'cluster-no-state');

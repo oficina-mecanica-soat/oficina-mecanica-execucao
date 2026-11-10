@@ -36,3 +36,13 @@ variable "cluster_name" {
   type        = string
   description = "Cluster compartilhado obtido do contrato SSM; registrado no state para recuperação segura de destroy."
 }
+
+variable "environment" {
+  type        = string
+  default     = "development"
+  description = "Ambiente usado nos nomes dos recursos próprios e contratos SSM."
+  validation {
+    condition     = contains(["development", "homologation", "production"], var.environment)
+    error_message = "Use o nome de ambiente documentado no Git Flow."
+  }
+}

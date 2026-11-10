@@ -8,7 +8,7 @@ Serviço .NET 10 com Clean Architecture, healthcheck, validação JWT, testes, D
 
 `PrepararExecucao` reserva todo o lote ou persiste uma recusa sem reserva parcial. `CancelarPreparacao` libera o saldo uma vez, inclusive após reiniciar o processamento e reentregar com outro `mensagemId`. Estado, saldos, reservas por OS/item, deduplicação e outbox são confirmados na mesma transação, com comparação de revisões técnicas. A versão de negócio segue a RFC-0007 atualizada no [PR #325](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/325).
 
-O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. `AutorizarExecucao`, início/finalização física e integração ponta a ponta com OS/cobrança permanecem pendentes. DynamoDB, SQS FIFO e DLQ reais pertencem à F4-04 e ainda não estão provisionados nem conectados. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS.
+O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. `AutorizarExecucao`, início/finalização física e integração ponta a ponta com OS/cobrança permanecem pendentes. A configuração Terraform de DynamoDB, SQS FIFO e DLQ da F4-04 está preparada; os recursos reais ainda não foram provisionados nem conectados ao runtime. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS.
 
 Nenhuma alteração desta entrega implementa a extração no monólito. Catálogo, clientes, veículos e coordenação da Saga continuam no serviço de OS. Não há acesso ao banco de outro serviço nem compartilhamento de Domain/migrations.
 
@@ -82,7 +82,7 @@ Fluxo: `feature/* → PR develop → PR release → PR main`. As branches de est
 
 **AWS permanece desligada.** `AWS_DEPLOY_ENABLED=false` impede chamar o deploy no merge de código. Um push deployável sem execução AWS também não promove automaticamente para release. Alterações exclusivamente documentais preservam o fluxo de promoção sem AWS. Não habilitar o deploy nem trocar o controle operacional para provocar provisionamento sem autorização específica.
 
-O workload Terraform possui namespace próprio `oficina-mecanica-execucao`, Deployment, Service privado e Secret JWT, sem criar VPC, EKS, registry compartilhado ou banco alheio. Manifests `k8s/` são referência local/dry-run; na AWS o ownership é exclusivo do Terraform. O roteamento público será integrado na F4-09.
+O workload Terraform mantém namespace próprio `oficina-mecanica-execucao`, Deployment, Service privado e Secret JWT, sem criar VPC, EKS, registry compartilhado ou banco alheio. Manifests `k8s/` são referência local/dry-run; na AWS o ownership é exclusivo do Terraform. O roteamento público será integrado na F4-09.
 
 ### Modelo de deploy e contratos consumidos
 
@@ -131,4 +131,40 @@ Variables do repositório: `AWS_DEPLOY_ENABLED=false`, `AUTO_PR_ENABLED=true`, `
 
 ## Próximo passo
 
-F4-04/F4-05: provisionar e validar DynamoDB/SQS FIFO/DLQ pelas esteiras quando houver janela autorizada, conectar o workload ao transporte real e implementar autorização/início/finalização física. Atualizar contratos SSM na tarefa de infraestrutura e integrar com OS na F4-10. Observabilidade distribuída e métricas da Saga/DLQ serão evidenciadas na F4-11. O workload atual permanece sem consumidor remoto habilitado; não habilitar deploy para afirmar integração ainda não validada.
+F4-04/F4-05: validar a identidade AWS do workload, conectar o runtime ao DynamoDB/SQS reais e comprovar leitura/escrita/consumo pelas esteiras na janela autorizada; depois implementar autorização/início/finalização física. Atualizar contratos SSM na tarefa de infraestrutura e integrar com OS na F4-10. Observabilidade distribuída e métricas da Saga/DLQ serão evidenciadas na F4-11. O workload atual permanece sem consumidor remoto habilitado; não habilitar deploy para afirmar integração ainda não validada.
+
+## Dados e mensageria — preparação da F4-04
+
+ADR-0025 e RFC-0007 definem ownership e parâmetros operacionais. Este incremento propõe os nomes físicos abaixo, derivados do componente e do ambiente; não os apresenta como nomes anteriormente definidos pela RFC. A aprovação do PR aprova essa proposta antes do provisionamento.
+
+| Recurso | Nome em development | Configuração |
+| --- | --- | --- |
+| DynamoDB | `oficina-mecanica-execucao-development` | `PAY_PER_REQUEST`, PK/SK string, compatível com `ArmazenamentoDynamoDb`; sem TTL de idempotência inventado, Scan ou índices sem acesso definido. |
+| Entrada | `oficina-mecanica-execucao-development.fifo` | FIFO, visibility 60 s, long polling 20 s, retenção 345600 s (4 dias), maxReceiveCount 5. |
+| DLQ | `oficina-mecanica-execucao-development-dlq.fifo` | FIFO, retenção 1209600 s (14 dias), redrive permitido somente da entrada própria. |
+
+A deduplicação por conteúdo fica desligada; o produtor enviará `MessageDeduplicationId=mensagemId` e `MessageGroupId=ordemServicoId` no incremento de transporte. Este Terraform não implementa o produtor/consumidor. As filas usam SSE gerenciado pelo SQS, sem nova chave KMS ou alteração de IAM neste PR. O status de infraestrutura precede o Deployment no grafo Terraform.
+
+Os seis contratos não sensíveis são parâmetros `String` em `/oficina-mecanica/{ambiente}/execucao/`, com os mesmos nomes no output `execucao_contracts`:
+
+- `dynamodb_table_name` e `dynamodb_table_arn`;
+- `entrada_queue_url` e `entrada_queue_arn`;
+- `dlq_url` e `dlq_arn`.
+
+O marcador `/oficina-mecanica/{ambiente}/status/execucao=ready` depende dos contratos e da política de redrive. Indica disponibilidade da infraestrutura; não comprova saúde da aplicação, identidade IAM ou consumo. `environment` é derivado do `ssm_environment_name` já usado pela esteira, evitando nomes silenciosamente presos a development.
+
+### Validação e operação
+
+O CI mantém os jobs/gates existentes e acrescenta `terraform test` com providers AWS/Kubernetes simulados, sem credenciais ou recursos reais, conforme o [mecanismo de mocks do Terraform](https://developer.hashicorp.com/terraform/language/tests/mocking). Quatro cenários verificam compatibilidade PK/SK, parâmetros FIFO/redrive da RFC, contratos SSM e segregação de nomes por ambiente. A validação local passou nesses quatro cenários e nos 15 testes Node; formatação/validação Terraform 1.15.8 e actionlint também passaram. Não confundir essa evidência com teste SQS real.
+
+No futuro apply autorizado, a esteira também consultará metadados de tabela/filas e comparará os parâmetros SSM com os recursos registrados no state. O bootstrap em conta nova passa a conferir também DynamoDB/SQS; recursos existentes do projeto bloqueiam state vazio. Sem permissão de consulta, a operação falha em vez de assumir ausência.
+
+Destroy continua dedicado e usa somente o plano salvo. Antes de planejar e imediatamente antes de aplicar, consulta a partição `OUTBOX#PENDENTE` de forma consistente e verifica contagens de mensagens visíveis/em voo/atrasadas na entrada e DLQ. Pendências, respostas inválidas ou falha de acesso bloqueiam. Contexto não sensível de tabela/filas acompanha o plano para conferir a remoção real e a limpeza dos contratos SSM mesmo depois de o state ficar vazio. Não remove mensagens nem faz purge/redrive automático.
+
+**Antes de autorizar destroy, parar produtores/consumidores e preservar os dados necessários.** Contagens SQS são aproximadas e não substituem essa quiescência operacional. Mesmo sem pendências de transporte, destruir a tabela elimina estoque, reservas, histórico e deduplicação; o guardrail de outbox não equivale a backup ou migração. A implementação deste PR não executa essa destruição.
+
+### O que permanece pendente
+
+Não há alteração de IAM, nova role, credencial em código ou ativação implícita da role dos nodes. Identidade do workload, menor privilégio e capacidade real do AWS Academy precisam ser validados na janela autorizada, conforme ADR-0025; não presumir que a credencial do runner seja a identidade do Pod. Conectar consumidor/publicador SQS, usar AWS SDK no runtime e comprovar leitura/escrita/consumo pelo workload permanecem próximos incrementos. A F4-04 não está concluída com este preparo offline.
+
+`AWS_DEPLOY_ENABLED=false` permanece preservado; nenhum plano autenticado, apply/destroy ou consulta AWS foi executado nesta entrega. Avisar Gabriel antes de precisar do novo laboratório e atualizar os environments somente nessa janela.
