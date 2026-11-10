@@ -94,4 +94,3 @@ public sealed class SqsPreparacaoPersistenteTests(DynamoDbFixture fixture) : ICl
             });
     }
 }
-
