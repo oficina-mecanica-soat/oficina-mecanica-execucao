@@ -1,0 +1,63 @@
+# Referência para validação local. Na AWS, ownership exclusivo do Terraform.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oficina-mecanica-execucao
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oficina-mecanica-execucao
+  template:
+    metadata:
+      labels:
+        app: oficina-mecanica-execucao
+    spec:
+      containers:
+        - name: execucao
+          image: oficina-mecanica-execucao:local
+          ports:
+            - containerPort: 8080
+          env:
+            - name: Jwt__Issuer
+              value: oficina-mecanica-auth
+            - name: Jwt__Audience
+              value: oficina-mecanica-api
+            - name: Jwt__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: execucao-jwt
+                  key: Jwt__Secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oficina-mecanica-execucao
+spec:
+  type: ClusterIP
+  selector:
+    app: oficina-mecanica-execucao
+  ports:
+    - port: 80
+      targetPort: 8080

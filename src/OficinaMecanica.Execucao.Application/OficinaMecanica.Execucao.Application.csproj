@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.7" />
+    <ProjectReference Include="../OficinaMecanica.Execucao.Domain/OficinaMecanica.Execucao.Domain.csproj" />
+  </ItemGroup>
+</Project>
