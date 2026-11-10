@@ -14,6 +14,8 @@ Nenhuma alteração desta entrega implementa a extração no monólito. Catálog
 
 ## Fontes da verdade
 
+- [Plano completo de execução, padronização de esteiras e resumo do PR #2](docs/plano-execucao-gabriel.md)
+
 - [README principal e funcionamento atual](https://github.com/oficina-mecanica-soat/oficina-mecanica-api)
 - [Plano de execução aprovado](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/186c601b1bf5ef2bb970c728a5ebe99d43bb8dce/docs/projeto/backlog-tecnico.md)
 - [ADR-0024 — limites dos serviços](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/main/docs/architecture/adrs/adr-0024-evolucao-para-microsservicos.md)
