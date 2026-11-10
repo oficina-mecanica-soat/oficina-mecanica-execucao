@@ -141,3 +141,9 @@ PR #3 da esteira integrado em develop. O próximo incremento prepara tabela Dyna
 Há quatro testes Terraform com providers simulados e 15 testes Node locais aprovados. Novos guardrails bloqueiam destroy com mensagens/outbox pendentes, mas exigem produtores parados e preservação dos dados; não substituem backup nem tornam contagens aproximadas uma garantia transacional.
 
 A identidade IAM do workload, conexão do runtime, prova real no laboratório e demais itens da F4-04 continuam pendentes. Não criar role ou assumir permissões de nodes silenciosamente. AWS permanece desabilitada. A janela será avisada previamente a Gabriel.
+
+## Atualização — adaptadores SQS sem ativação
+
+PR #4 da infraestrutura integrado em develop. O próximo incremento prepara `ConsumidorSqs` e `TransporteSqs`, reutilizando casos de uso, transação, deduplicação e publicador de outbox existentes. A nova porta de entrada `IProcessadorMensagem` é implementada pelo mesmo processador; a Application não recebe dependência AWS.
+
+Há testes de contrato com cliente SDK simulado, relógio controlado e integração com DynamoDB Local, sem interpretar mocks como prova SQS real. A composição do runtime, a identidade do workload, a URL de resultados publicada pelo owner OS e a observabilidade distribuída continuam pendentes. Não alterar silenciosamente IAM nem direcionar resultados à entrada do Execução. Esta etapa mantém o ambiente remoto desligado e não conclui a F4-04/F4-05 inteira.
