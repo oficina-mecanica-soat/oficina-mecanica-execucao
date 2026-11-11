@@ -361,6 +361,14 @@ Validação local: 299 testes aprovados, nenhum ignorado; cobertura consolidada 
 
 ## Configuração remota do workload pela esteira — F4-04
 
+### Recuperação do provider após timeout de criação
+
+Após corrigir IMDSv2 na infraestrutura Kubernetes, o Pod iniciou, mas o novo plano falhou em `kubernetes_deployment_v1.execucao` com `Unexpected Identity Change`: identidade anterior com campos nulos e identidade real preenchida na leitura. O primeiro apply havia criado o Deployment e terminado em timeout de rollout; o state parcial foi preservado pela esteira.
+
+O provider Kubernetes fica fixado em `3.2.1`, que inclui a correção de identidade após recursos demorarem a ficar prontos, conforme [changelog oficial da HashiCorp](https://github.com/hashicorp/terraform-provider-kubernetes/blob/main/CHANGELOG.md#321-jun-30-2026). O lockfile acompanha essa seleção; Terraform 1.15.8, provider AWS, recursos `*_v1`, workflows e contratos permanecem os mesmos. A configuração e os nove testes Terraform com providers simulados passam, mas a recuperação do state real exige a próxima execução autorizada após merge.
+
+Não remover, importar, editar ou descartar state como atalho. O próximo plano deverá restaurar o cache da conta, usar o provider corrigido e evidenciar as ações propostas, inclusive eventual substituição do Deployment marcado pela falha anterior. Não há autorização para apagar tabela ou filas; healthcheck do Pod não comprova identidade/permissões DynamoDB/SQS nem encerra a F4-04. Este PR não executa apply.
+
 ### Preparação do próximo apply
 
 O controle versionado retorna para `TERRAFORM_ACTION=apply` após o bootstrap de state da conta do laboratório. `AWS_DEPLOY_ENABLED=false` e o processamento remoto desligado permanecem até janela específica. Este preparo não executa deploy nem modifica o host, contratos ou recursos declarados.
