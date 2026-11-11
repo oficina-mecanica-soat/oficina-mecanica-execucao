@@ -13,6 +13,7 @@ Fontes: ADR-0024/25/26 e RFC-0007, incluindo o ajuste de versão aprovado no [PR
 | `AbrirOrdemServicoValidator` | Peças repetidas e quantidades inválidas são rejeitadas; solicitação sem peças é válida. |
 | `AbrirOrdemServicoUseCase` | Verificar todos os saldos antes de reservar. Sem saldo/item não há reserva parcial. |
 | `CancelarOrdemServicoUseCase` | Falha de estoque impede confirmar a compensação. |
+| `GestaoOrdemServico/Entities/Servico.cs`, `Enums/StatusServico.cs`, quatro mensagens e dez cenários de teste da API | Entidade extraída sem mudança de comportamento: catálogo obrigatório, valor positivo, início somente pendente, finalização somente em execução, datas UTC e estados 1/2/3 preservados. Ainda não conectada aos casos de uso/persistência do serviço extraído. |
 | `OrdemServico.IniciarDiagnostico` | Não existe geração automática de laudo. O resultado desta preparação transporta o snapshot recebido de veículo, mecânico e serviços em `diagnostico`, sem inventar avaliação clínica/técnica. |
 
 ## Organização das camadas
@@ -70,3 +71,11 @@ Os testes de integração criam DynamoDB Local temporário via Testcontainers, e
 Evidência local da reorganização em 10/11/2026: restore/build Release e formato aprovados, zero avisos/erros; **147 testes aprovados, zero ignorados**, sendo 59 de domínio (incluindo os 21 testes extraídos de `Estoque`), 12 unitários de Application, 11 da base API e 65 de integração. Cobertura local consolidada por classe/linha: **96,62%** (629/651); o relatório consolidado do CI é a evidência do gate antes do merge. A demonstração histórica via Compose passou após a reorganização, comprovando estoque 10→7/3→10/0 e dois reinícios reais da API. Os dados de demonstração ficaram fora do Git; containers e rede foram encerrados ao final.
 
 Este incremento conclui o fluxo local de preparação/cancelamento, não a F4-05 inteira. Autorizar execução, início/finalização física, métricas Datadog, consumidor/publicador SQS, tabelas/filas/SSM reais, integração da Saga e políticas HTTP permanecem nas tarefas seguintes. O worker por arquivos é opt-in e recusa ambiente diferente de Development. O workload AWS atual continua sem consumidor remoto habilitado. Nenhum apply/deploy foi executado, nem a AWS foi religada.
+
+## Extração posterior de Servico — sem ativação do ciclo físico
+
+Origem conferida na API, commit `bf58a5a9c2654c209910ce14e44b720a32e9e711`: `src/OficinaMecanica.Domain/GestaoOrdemServico/Entities/Servico.cs`, `Enums/StatusServico.cs`, as quatro constantes usadas de `Messages/OrdemServicoErrorMessages.cs` e `tests/OficinaMecanica.Domain.UnitTests/GestaoOrdemServico/Entities/ServicoTests.cs`. O Execução preserva a mesma organização funcional dentro de Domain/testes. Foram ajustados somente namespaces e helpers de testes para não depender de OS; o agregado inteiro não foi copiado.
+
+Os dez cenários preservam criação válida/inválida, início de serviço pendente, recusa de novo início em serviço em execução/finalizado, finalização de serviço em execução e recusa em serviço pendente/finalizado. Não comprovam autorização por orçamento, persistência, baixa ou idempotência do ciclo físico; essas integrações ainda precisam de implementação.
+
+Gabriel confirmou a preservação do início manual do modelo DDD: autorização apenas libera o trabalho; o início físico ocorre na ação do mecânico. O esclarecimento do contrato está em PR próprio da RFC antes de integrar os handlers. O código atual separa aprovação, início/finalização de cada serviço e finalização da OS. Esta extração não implementa esses handlers nem altera eventos. Nenhuma esteira, estrutura auxiliar, rota, contrato SSM ou recurso AWS é alterado. A validação local passou em 190 testes, zero ignorados, com cobertura consolidada de 96,70%, build sem avisos e formato verificado.

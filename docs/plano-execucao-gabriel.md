@@ -159,3 +159,9 @@ Após os PRs de estrutura e fluxo de trabalho, a preparação da F4-04 conecta o
 O host atual permanece no modo anterior: nenhuma variável ativa o remoto, e `Program.cs`, Terraform, manifests e esteiras não mudam neste incremento. A definição e prova da identidade IAM continuam necessárias antes de integrar a ativação no workload. O contrato de resultados da OS já foi aprovado na API #328, mas sua publicação real ainda exige apply autorizado. Não usar credenciais do runner ou role dos nodes por suposição.
 
 Build Release e 180 testes locais passaram sem avisos, erros ou testes ignorados; DynamoDB Local e SQS simulado verificam retomada de outbox durante long polling, falhas de recepção/envio, ACK após persistência e encerramento. Esses testes não comprovam IAM/FIFO/DLQ reais. AWS permanece bloqueada; avisar Gabriel antes de precisar do laboratório. A F4-04/F4-05 ainda inclui ativação/prova remota e as regras de autorização/início/finalização física seguintes.
+
+## Atualização — extração independente de Servico
+
+PR #12 integrado. O incremento seguinte extrai a entidade `Servico`, enum `StatusServico`, quatro mensagens e dez cenários de teste da API, preservando nomes, transições e invariantes. Não altera OS, mensagens ou banco; não conecta ainda a entidade ao runtime/persistência e não conclui a F4-05. A origem e os limites estão em `extracao-preparacao.md`.
+
+A implementação de handlers depende de registrar a passagem entre `AutorizarExecucao`, ações físicas do mecânico e eventos/compensação. Gabriel confirmou a preservação do início manual do modelo DDD; o esclarecimento está em PR próprio da RFC. Este incremento extrai apenas a entidade e seus testes, sem antecipar handlers ou o corte público. A validação local passou em 190 testes, zero ignorados, cobertura consolidada de 96,70%, build sem avisos e formato verificado. AWS permanece desligada.
