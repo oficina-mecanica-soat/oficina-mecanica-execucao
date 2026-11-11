@@ -187,3 +187,11 @@ Geovanna mantém emissores JWT e Gateway na F4-09, produtor OS na F4-06 e corte 
 API #341 e Execução #15 integrados em develop. Gabriel aprovou contexto opcional persistido no envelope. O próximo par de PRs registra o contrato na RFC e implementa no Execução: logs JSON/HTTP, correlação funcional, escopos Datadog nativos, contexto filtrado na outbox e configuração futura do Pod. Reutiliza padrões vigentes da API, sem alterar esteiras ou nomes de componentes.
 
 Ordem de revisão/merge: contrato documental da API, depois implementação do Execução. Gabriel realiza ambos. Consumidores estritos precisam aceitar o metadado antes do corte coordenado; esta entrega não muda produtor OS/Gateway ou ativa acesso remoto. A F4-11 permanece parcial: ingestão real, impacto do profiler, métricas/painéis e alertas precisam de evidência e janela autorizada. AWS continua bloqueada; avisar antes de precisar de novo laboratório.
+
+## Atualização — entradas combinadas da F4-10 local
+
+API #344 e Execução #16 foram mesclados, conferidos em 11/11/2026. Este incremento reutiliza a fixture HTTP/DynamoDB Local e os adaptadores SQS existentes para testar a jornada do Execução nas duas entradas juntas: preparação/autorização por comando, início/finalização manual HTTP, persistência/outbox e publicação à OS simulada.
+
+Os cenários cobrem repetição entre recriações do host, baixa única, correlação/metadados de transporte, compensação confirmada antes de falha de ACK e recusa sem saldo. Somente cliente SQS/atores externos são simulados; HTTP/JWT e DynamoDB Local são reais no teste. Não substitui a integração com os três serviços nem comprova FIFO/DLQ, IAM ou ingestão Datadog reais. Não altera contratos, componentes, regras ou esteiras.
+
+Próximas dependências mantidas: definir e validar a identidade do workload conforme capacidade real do laboratório (ADR-0025), ativar composição remota de forma explícita e coordenar integração com as frentes OS/Orçamento/Pagamento/Gateway. O repositório de Orçamento/Pagamento não apareceu na organização na consulta de 11/11/2026; não tratar essa ausência como implementação local pendente de Gabriel. Não criar roles ou presumir permissões da LabRole dos nodes. Avisar Gabriel antes de precisar de AWS; merges continuam exclusivamente com ele.

@@ -3,10 +3,13 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Amazon.DynamoDBv2;
+using Amazon.SQS;
+using Amazon.SQS.Model;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Persistencia;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Entities;
@@ -17,6 +20,96 @@ namespace OficinaMecanica.Execucao.API.IntegrationTests;
 
 public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixture<HttpDynamoDbFixture>
 {
+    [Fact]
+    public async Task Dado_ComandosSqsEAcoesHttp_Quando_ConcluirEReiniciar_Entao_PublicaCicloUnicoComBaixaECorrelacao()
+    {
+        await using var c = await Cenario.CriarAsync(fixture, preparar: false);
+        var preparar = c.PrepararComando() with
+        {
+            TraceContext = new() { ["traceparent"] = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }
+        };
+        await c.EntregarSqsAsync(preparar, async () => Assert.Equal(3, (await c.SaldoAsync()).Reservada));
+        await c.PublicarSqsAsync();
+        var preparada = JsonContrato.Ler<Mensagem>(Assert.Single(c.Enviadas).MessageBody);
+        c.PreparacaoId = preparada.Dados.Deserialize<ExecucaoPreparada>(JsonContrato.Options)!.PreparacaoId;
+        await c.EntregarSqsAsync(c.Comando("AutorizarExecucao", new AutorizarExecucao(c.PreparacaoId, 7)) with { TraceContext = preparar.TraceContext });
+        Assert.Null((await c.EstadoAsync()).Execucao!.Servicos[0].DataInicio);
+        await c.PublicarSqsAsync();
+        Assert.Single(c.Enviadas); // Autorizar não anuncia início físico.
+
+        var operacao = Guid.NewGuid();
+        c.Client.DefaultRequestHeaders.Add("traceparent", preparar.TraceContext!["traceparent"]);
+        using (var inicio = await c.AcaoAsync("iniciar-execucao", operacao)) Assert.Equal(HttpStatusCode.Accepted, inicio.StatusCode);
+        var dataInicio = (await c.EstadoAsync()).Execucao!.Servicos[0].DataInicio;
+        await c.ReiniciarAsync();
+        c.Client.DefaultRequestHeaders.Add("traceparent", preparar.TraceContext!["traceparent"]);
+        using (var repeticao = await c.AcaoAsync("iniciar-execucao", operacao)) Assert.Equal(HttpStatusCode.Accepted, repeticao.StatusCode);
+        using (var fimServico = await c.AcaoAsync("finalizar")) Assert.Equal(HttpStatusCode.Accepted, fimServico.StatusCode);
+        using (var fim = await c.FinalizarAsync()) Assert.Equal(HttpStatusCode.Accepted, fim.StatusCode);
+        var dataFim = (await c.EstadoAsync()).Execucao!.FinalizadaEm;
+        await c.ReiniciarAsync();
+        using (var repeticao = await c.FinalizarAsync()) Assert.Equal(HttpStatusCode.Accepted, repeticao.StatusCode);
+        Assert.Equal(dataInicio, (await c.EstadoAsync()).Execucao!.Servicos[0].DataInicio);
+        Assert.Equal(dataFim, (await c.EstadoAsync()).Execucao!.FinalizadaEm);
+        Assert.Equal(7, (await c.SaldoAsync()).Disponivel);
+        Assert.Equal(0, (await c.SaldoAsync()).Reservada);
+        await c.PublicarSqsAsync();
+        var eventos = c.Enviadas.Select(p => JsonContrato.Ler<Mensagem>(p.MessageBody)).ToArray();
+        Assert.Equal(["ExecucaoPreparada", "ExecucaoIniciada", "ExecucaoFinalizada"], eventos.Select(m => m.Tipo).ToArray());
+        Assert.Equal(operacao, eventos[1].CausationId);
+        Assert.All(eventos, m =>
+        {
+            Assert.Equal(preparar.SagaId, m.SagaId);
+            Assert.Equal(preparar.CorrelationId, m.CorrelationId);
+            Assert.Equal(preparar.TraceContext!["traceparent"], Assert.Single(m.TraceContext!).Value);
+        });
+        c.ConferirMetadadosSqs();
+    }
+
+    [Fact]
+    public async Task Dado_CompensacaoConfirmadaSemAck_Quando_ReiniciarEReentregar_Entao_LiberaUmaVezEPublicaConfirmacao()
+    {
+        await using var c = await Cenario.CriarAsync(fixture, preparar: false);
+        await c.EntregarSqsAsync(c.PrepararComando());
+        await c.PublicarSqsAsync();
+        c.PreparacaoId = JsonContrato.Ler<Mensagem>(Assert.Single(c.Enviadas).MessageBody)
+            .Dados.Deserialize<ExecucaoPreparada>(JsonContrato.Options)!.PreparacaoId;
+        var cancelar = c.Comando("CancelarPreparacao", new CancelarPreparacao(c.PreparacaoId, "Orçamento recusado"));
+        await Assert.ThrowsAsync<IOException>(() => c.EntregarSqsAsync(cancelar, async () =>
+        {
+            Assert.True((await c.EstadoAsync()).Cancelada);
+            Assert.Equal(10, (await c.SaldoAsync()).Disponivel);
+            throw new IOException("Confirmação SQS indisponível após commit");
+        }));
+        await c.ReiniciarAsync();
+        await c.EntregarSqsAsync(cancelar);
+        await c.EntregarSqsAsync(cancelar with { MensagemId = Guid.NewGuid() });
+        Assert.Equal(10, (await c.SaldoAsync()).Disponivel);
+        Assert.Equal(0, (await c.SaldoAsync()).Reservada);
+        using (var inicio = await c.AcaoAsync("iniciar-execucao")) Assert.Equal((HttpStatusCode)422, inicio.StatusCode);
+        await c.PublicarSqsAsync();
+        Assert.Equal(["ExecucaoPreparada", "PreparacaoCancelada"], c.Enviadas.Select(p => JsonContrato.Ler<Mensagem>(p.MessageBody).Tipo).ToArray());
+        c.ConferirMetadadosSqs();
+    }
+
+    [Fact]
+    public async Task Dado_PreparacaoSemSaldoViaSqs_Quando_RepetirAposReinicio_Entao_RecusaSemReservaOuAutorizacao()
+    {
+        await using var c = await Cenario.CriarAsync(fixture, preparar: false);
+        var preparar = c.PrepararComando(11);
+        await c.EntregarSqsAsync(preparar);
+        await c.ReiniciarAsync();
+        await c.EntregarSqsAsync(preparar with { MensagemId = Guid.NewGuid() });
+        Assert.Equal(10, (await c.SaldoAsync()).Disponivel);
+        Assert.Equal(0, (await c.SaldoAsync()).Reservada);
+        Assert.Null((await c.EstadoAsync()).Autorizacao);
+        await c.PublicarSqsAsync();
+        var recusa = JsonContrato.Ler<Mensagem>(Assert.Single(c.Enviadas).MessageBody);
+        Assert.Equal("PreparacaoRecusada", recusa.Tipo);
+        Assert.Equal("ESTOQUE_INSUFICIENTE", recusa.Dados.GetProperty("codigoMotivo").GetString());
+        c.ConferirMetadadosSqs();
+    }
+
     [Fact]
     public async Task Dado_TraceHttp_Quando_IniciarServico_Entao_PersisteContextoNaOutbox()
     {
@@ -138,16 +231,19 @@ public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixt
         Assert.Equal(1, body.GetProperty("versaoPreparacao").GetInt32());
     }
 
-    private sealed class Cenario(WebApplicationFactory<Program> factory, HttpClient client) : IAsyncDisposable
+    private sealed class Cenario(WebApplicationFactory<Program> factory, HttpClient client, string endpoint, string tabela) : IAsyncDisposable
     {
         public HttpClient Client => client;
         public Guid OsId { get; } = Guid.NewGuid();
         public Guid FilialId { get; } = Guid.NewGuid();
         public Guid ItemId { get; } = Guid.NewGuid();
         public Guid ServicoId { get; } = Guid.NewGuid();
-        public Guid PreparacaoId { get; private set; }
+        public Guid PreparacaoId { get; set; }
+        public List<SendMessageRequest> Enviadas { get; } = [];
+        private const string Entrada = "https://sqs.us-east-1.amazonaws.com/123456789012/entrada-teste.fifo";
+        private const string Resultados = "https://sqs.us-east-1.amazonaws.com/123456789012/resultados-teste.fifo";
         public string Recurso => $"/api/v1/execucoes/{OsId:D}/preparacoes/{PreparacaoId:D}";
-        public static async Task<Cenario> CriarAsync(HttpDynamoDbFixture fixture, string perfil = "Mecanico")
+        public static async Task<Cenario> CriarAsync(HttpDynamoDbFixture fixture, string perfil = "Mecanico", bool preparar = true)
         {
             var tabela = "http-" + Guid.NewGuid().ToString("N");
             using var dynamo = fixture.CriarClient();
@@ -155,18 +251,69 @@ public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixt
             var factory = ExecucoesHttpFactory.Criar(habilitado: true, endpoint: fixture.Endpoint, tabela: tabela);
             var client = factory.CreateClient();
             ExecucoesHttpFactory.Autenticar(client, perfil);
-            var c = new Cenario(factory, client);
+            var c = new Cenario(factory, client, fixture.Endpoint, tabela);
             using var scope = factory.Services.CreateScope();
             var tx = new TransacaoExecucao(scope.ServiceProvider.GetRequiredService<IArmazenamentoExecucao>());
             await tx.AdicionarAsync(ChavesExecucao.Estoque(c.FilialId, c.ItemId), SaldoEstoque.De(ItemEstoque.Criar(c.ItemId, 10)), default);
             await tx.ConfirmarAsync(default);
-            var resultado = await c.ProcessarAsync(c.Comando("PrepararExecucao", new PrepararExecucao(1, c.FilialId,
-                Guid.NewGuid(), Guid.NewGuid(), [new(c.ItemId, 3)], [new(c.ServicoId, "Troca de óleo", 10m, Guid.NewGuid())])));
-            c.PreparacaoId = resultado!.Dados.Deserialize<ExecucaoPreparada>(JsonContrato.Options)!.PreparacaoId;
+            if (preparar)
+            {
+                var resultado = await c.ProcessarAsync(c.PrepararComando());
+                c.PreparacaoId = resultado!.Dados.Deserialize<ExecucaoPreparada>(JsonContrato.Options)!.PreparacaoId;
+            }
             return c;
         }
+        public Mensagem PrepararComando(int quantidade = 3) => Comando("PrepararExecucao", new PrepararExecucao(1, FilialId,
+            Guid.NewGuid(), Guid.NewGuid(), [new(ItemId, quantidade)], [new(ServicoId, "Troca de óleo", 10m, Guid.NewGuid())]));
         public Mensagem Comando<T>(string tipo, T dados) => new(Guid.NewGuid(), tipo, 1, OsId, OsId, "teste-http",
             Guid.NewGuid(), DateTimeOffset.UtcNow, JsonSerializer.SerializeToElement(dados, JsonContrato.Options));
+        public async Task ReiniciarAsync()
+        {
+            client.Dispose();
+            await factory.DisposeAsync();
+            factory = ExecucoesHttpFactory.Criar(habilitado: true, endpoint: endpoint, tabela: tabela);
+            client = factory.CreateClient();
+            ExecucoesHttpFactory.Autenticar(client, "Mecanico");
+        }
+        public async Task EntregarSqsAsync(Mensagem mensagem, Func<Task>? antesDoAck = null)
+        {
+            var sqs = new Mock<IAmazonSQS>(MockBehavior.Strict);
+            sqs.Setup(s => s.ReceiveMessageAsync(It.IsAny<ReceiveMessageRequest>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ReceiveMessageResponse
+                {
+                    Messages = [new() { Body = JsonContrato.Serializar(mensagem),
+                    ReceiptHandle = "recibo-teste", Attributes = new() { ["MessageGroupId"] = OsId.ToString("D"),
+                        ["MessageDeduplicationId"] = mensagem.MensagemId.ToString("D") } }]
+                });
+            sqs.Setup(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()))
+                .Returns(async () => { if (antesDoAck is not null) await antesDoAck(); return new DeleteMessageResponse(); });
+            using var scope = factory.Services.CreateScope();
+            var consumidor = new ConsumidorSqs(sqs.Object, scope.ServiceProvider.GetRequiredService<ProcessadorPreparacao>(), Entrada, TimeProvider.System);
+            Assert.True(await consumidor.ProcessarProximaAsync());
+            sqs.Verify(s => s.DeleteMessageAsync(It.Is<DeleteMessageRequest>(p => p.QueueUrl == Entrada && p.ReceiptHandle == "recibo-teste"), It.IsAny<CancellationToken>()), Times.Once);
+        }
+        public async Task PublicarSqsAsync()
+        {
+            var sqs = new Mock<IAmazonSQS>(MockBehavior.Strict);
+            sqs.Setup(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()))
+                .Callback<SendMessageRequest, CancellationToken>((pedido, _) => Enviadas.Add(pedido))
+                .ReturnsAsync(new SendMessageResponse { MessageId = "sqs-confirmou", HttpStatusCode = HttpStatusCode.OK });
+            using var scope = factory.Services.CreateScope();
+            var publicador = new PublicadorOutbox(scope.ServiceProvider.GetRequiredService<IArmazenamentoExecucao>(),
+                new TransporteSqs(sqs.Object, Resultados), TimeProvider.System, scope.ServiceProvider.GetRequiredService<IObservabilidadeExecucao>());
+            while (await publicador.PublicarProximaAsync()) { }
+        }
+        public void ConferirMetadadosSqs()
+        {
+            Assert.Equal(Enviadas.Count, Enviadas.Select(p => p.MessageDeduplicationId).Distinct().Count());
+            Assert.All(Enviadas, p =>
+            {
+                var mensagem = JsonContrato.Ler<Mensagem>(p.MessageBody);
+                Assert.Equal(Resultados, p.QueueUrl);
+                Assert.Equal(OsId.ToString("D"), p.MessageGroupId);
+                Assert.Equal(mensagem.MensagemId.ToString("D"), p.MessageDeduplicationId);
+            });
+        }
         public async Task<Mensagem?> ProcessarAsync(Mensagem comando)
         {
             using var scope = factory.Services.CreateScope();
