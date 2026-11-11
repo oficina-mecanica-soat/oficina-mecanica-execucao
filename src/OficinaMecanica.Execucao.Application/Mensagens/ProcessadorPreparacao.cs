@@ -1,12 +1,14 @@
 using System.Text.Json;
 using OficinaMecanica.Execucao.Application.Preparacoes.PrepararExecucao;
 using OficinaMecanica.Execucao.Application.Preparacoes.CancelarPreparacao;
+using OficinaMecanica.Execucao.Application.Preparacoes.AutorizarExecucao;
 
 namespace OficinaMecanica.Execucao.Application.Mensagens;
 
-public sealed class ProcessadorPreparacao(PrepararExecucaoUseCase preparar, CancelarPreparacaoUseCase cancelar) : IProcessadorMensagem
+public sealed class ProcessadorPreparacao(PrepararExecucaoUseCase preparar, CancelarPreparacaoUseCase cancelar,
+    AutorizarExecucaoUseCase autorizar) : IProcessadorMensagem
 {
-    public async Task<Mensagem> ProcessarAsync(string json, CancellationToken cancellationToken = default)
+    public async Task<Mensagem?> ProcessarAsync(string json, CancellationToken cancellationToken = default)
     {
         Mensagem mensagem;
         try
@@ -18,6 +20,12 @@ public sealed class ProcessadorPreparacao(PrepararExecucaoUseCase preparar, Canc
 
         try
         {
+            if (mensagem.Tipo == "AutorizarExecucao")
+            {
+                await autorizar.ExecuteAsync(new(mensagem, mensagem.Dados.Deserialize<AutorizarExecucao>(JsonContrato.Options)
+                    ?? throw new ContratoMensagemException("DADOS_OBRIGATORIOS")), cancellationToken);
+                return null;
+            }
             return mensagem.Tipo switch
             {
                 "PrepararExecucao" => (await preparar.ExecuteAsync(new(mensagem, mensagem.Dados.Deserialize<OficinaMecanica.Execucao.Application.Mensagens.PrepararExecucao>(JsonContrato.Options) ?? throw new ContratoMensagemException("DADOS_OBRIGATORIOS")), cancellationToken)).Resultado,

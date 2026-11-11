@@ -77,7 +77,7 @@ public sealed class AdaptadoresSqsTests
     public async Task Dado_CommitPendente_Quando_Consumir_Entao_ConfirmaSomenteDepoisDaConclusao()
     {
         var c = new Cenario();
-        var commit = new TaskCompletionSource<Mensagem>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var commit = new TaskCompletionSource<Mensagem?>(TaskCreationOptions.RunContinuationsAsynchronously);
         c.Processador.Setup(p => p.ProcessarAsync(c.Corpo, It.IsAny<CancellationToken>())).Returns(commit.Task);
 
         var consumo = c.Consumidor.ProcessarProximaAsync();
@@ -121,7 +121,7 @@ public sealed class AdaptadoresSqsTests
     public async Task Dado_ProcessamentoLongo_Quando_VisibilidadeRenovar_Entao_PreservaReciboEAguardaCommit()
     {
         var c = new Cenario();
-        var commit = new TaskCompletionSource<Mensagem>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var commit = new TaskCompletionSource<Mensagem?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var renovou = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         c.Processador.Setup(p => p.ProcessarAsync(c.Corpo, It.IsAny<CancellationToken>())).Returns(commit.Task);
         c.Client.Setup(sqs => sqs.ChangeMessageVisibilityAsync(It.IsAny<ChangeMessageVisibilityRequest>(), It.IsAny<CancellationToken>()))
@@ -244,6 +244,19 @@ public sealed class AdaptadoresSqsTests
 
     private static Mensagem MensagemValida() => new(Guid.NewGuid(), "ExecucaoPreparada", 1, Guid.NewGuid(), Guid.NewGuid(),
         "correlacao-de-teste", Guid.NewGuid(), DateTimeOffset.UtcNow, JsonSerializer.SerializeToElement(new { versao = 1 }));
+
+    [Fact]
+    public async Task Dado_ComandoSemEventoImediato_Quando_ConfirmarProcessamento_Entao_ConfirmaEntradaSomenteAposCommit()
+    {
+        var c = new Cenario();
+        var commit = new TaskCompletionSource<Mensagem?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        c.Processador.Setup(p => p.ProcessarAsync(c.Corpo, It.IsAny<CancellationToken>())).Returns(commit.Task);
+        var consumo = c.Consumidor.ProcessarProximaAsync();
+        c.NaoConfirmou();
+        commit.SetResult(null);
+        Assert.True(await consumo);
+        c.Client.Verify(sqs => sqs.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
 
     private sealed class Cenario
     {
