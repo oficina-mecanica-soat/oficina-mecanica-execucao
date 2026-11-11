@@ -2,13 +2,13 @@
 
 Serviço de diagnóstico, estoque físico, reservas e execução da Fase 4. Responsável: Gabriel. A arquitetura é definida pelas ADRs 0024–0026 e pela RFC-0007 do repositório da API.
 
-## Estado desta entrega — HTTP local da F4-05
+## Estado desta entrega — composição remota opt-in da F4-04
 
 Serviço .NET 10 com Clean Architecture, healthcheck, validação JWT, testes, Dockerfile, manifests Kubernetes, workload Terraform e CI/CD próprios. Domain mantém `Estoque`/`ItemEstoque` e as regras de reserva; Application separa preparação e cancelamento em Request/Response/Validator/UseCase, com portas tipadas. Infrastructure implementa persistência, unidade de trabalho DynamoDB, outbox e processamento local por arquivos; API configura HTTP e a composição das dependências.
 
 `PrepararExecucao` reserva todo o lote ou persiste uma recusa sem reserva parcial. `CancelarPreparacao` libera o saldo uma vez, inclusive após reiniciar o processamento e reentregar com outro `mensagemId`. Estado, saldos, reservas por OS/item, deduplicação e outbox são confirmados na mesma transação, com comparação de revisões técnicas. A versão de negócio segue a RFC-0007 atualizada no [PR #325](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/325).
 
-O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. O Domain também contém `Servico`, `StatusServico` e as mensagens/testes extraídos da API, preservando criação, início e finalização individuais. A entidade agora participa do ciclo persistido: autorização, início manual de cada serviço, finalização individual e finalização explícita com baixa. Os casos de uso também estão conectados a rotas HTTP locais para Administrador/Mecanico, com consulta do estado e resposta 202 após commit. Ainda não há corte público no Gateway ou integração ponta a ponta com OS/cobrança. A configuração Terraform de DynamoDB, SQS FIFO e DLQ da F4-04 está preparada; os recursos reais ainda não foram provisionados nem conectados ao runtime. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS. A composição remota dos adaptadores está preparada por chamada explícita, mas não foi ativada pelo host ou workload.
+O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. O Domain também contém `Servico`, `StatusServico` e as mensagens/testes extraídos da API, preservando criação, início e finalização individuais. A entidade agora participa do ciclo persistido: autorização, início manual de cada serviço, finalização individual e finalização explícita com baixa. Os casos de uso também estão conectados a rotas HTTP locais para Administrador/Mecanico, com consulta do estado e resposta 202 após commit. Ainda não há corte público no Gateway ou integração ponta a ponta com OS/cobrança. A configuração Terraform de DynamoDB, SQS FIFO e DLQ da F4-04 está preparada; os recursos reais ainda não foram provisionados nem conectados ao runtime. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS. O host agora oferece composição remota opt-in, validada por configuração e STS; nenhuma configuração atual do workload a habilita. Consulte a seção de composição do host abaixo.
 
 ### Extração de Servico — marco anterior da F4-05
 
@@ -328,10 +328,33 @@ Referências primárias: [IAM em transações DynamoDB](https://docs.aws.amazon.
 
 Credenciais ausentes, falha técnica ou cancelamento interrompem a criação; não retornam clientes por fallback. O SDK mantém a renovação das credenciais do instance profile. Não registra nem persiste tokens/chaves. O objeto retornado é dono dos clientes/credenciais e deve viver até o encerramento do host: chamar `AddInfrastructureRemota` com seus clientes não transfere esse descarte à composição existente. A dependência `AWSSDK.SecurityToken` 4.0.101.6 segue a família v4 dos adaptadores atuais; Domain/Application permanecem sem dependência de autenticação AWS.
 
-Este componente **não é chamado pelo Program nem registrado na DI atual**. O host mantém o modo local anterior; ações autorizadas fora desse modo continuam em 503. Não há nova variável, ARN de conta real versionado, acesso SSM no runtime ou alteração de IAM, metadados dos nodes, Terraform, manifests ou pipelines. O próximo incremento deverá conectar o host/configuração e a disponibilidade remota explicitamente, preservando autenticação e validações.
+No incremento original dos clientes, o componente não era chamado pelo Program. A integração posterior descrita abaixo o conecta somente quando o modo remoto é explicitamente habilitado; sem isso, a barreira local e os 503 anteriores permanecem. Não há nova variável, ARN de conta real versionado, acesso SSM no runtime ou alteração de IAM, metadados dos nodes, Terraform, manifests ou pipelines. O próximo incremento deverá conectar o host/configuração e a disponibilidade remota explicitamente, preservando autenticação e validações.
 
 Os testes usam STS simulado e verificam aceitação/rejeição de identidade, propagação de falhas/cancelamento e configuração inválida antes de obter credenciais. Não consultam metadados EC2 ou STS reais e não comprovam IMDS acessível, renovação no Pod ou permissões de banco/filas. A construção bem-sucedida real dos clientes e seu descarte na integração do host permanecem para validação posterior. A prova acadêmica exige implantação autorizada e acesso real à tabela/fila próprias e publicação à OS. A concessão continua sem isolamento IAM entre aplicações com acesso às credenciais dos nodes.
 
 Referência de implementação: [InstanceProfileAWSCredentials no AWS SDK .NET v4](https://docs.aws.amazon.com/sdkfornet/v4/apidocs/items/Runtime/TInstanceProfileAWSCredentials.html), que distingue essa fonte explícita do provider usado na cadeia de fallback.
 
 Validação local deste incremento: 280 testes aprovados, nenhum ignorado, cobertura consolidada 95,17% (1260/1324), restore/build Release sem avisos e formato verificado. Gate de estrutura e diff aprovados. Caminhos de IMDS/construção real dos clientes não foram executados para evitar autenticação real nos testes; não foram excluídos da cobertura. O gate do CI permanece em 90%.
+
+## Composição do host — modo remoto opt-in
+
+Após Execução #23, `Program` escolhe uma única composição antes de construir/iniciar a aplicação. Sem `ProcessamentoRemoto:Habilitado=true`, mantém a composição local anterior, sem obter credenciais AWS. Se os modos local e remoto estiverem habilitados juntos, falha antes da autenticação. Com remoto habilitado, exige todos os parâmetros abaixo, verifica a conta e as URLs antes de obter credenciais e aguarda a validação STS da identidade acadêmica. Só então registra `AddInfrastructureRemota` com o worker e os clientes existentes. Falha não volta ao modo local.
+
+| Chave de configuração (environment usa `__`) | Valor/origem na futura implantação |
+| --- | --- |
+| `ProcessamentoRemoto:Habilitado` | Ausente/false por padrão; true somente na janela autorizada de validação/ativação. |
+| `ProcessamentoRemoto:ContaEsperada` | Conta de destino conferida independentemente da resposta STS do Pod. |
+| `ProcessamentoRemoto:Regiao` | Região dos recursos; sem fallback de região no host. |
+| `ProcessamentoRemoto:Tabela` | Contrato existente `execucao/dynamodb_table_name`. |
+| `ProcessamentoRemoto:FilaEntradaUrl` | Contrato existente `execucao/entrada_queue_url`. |
+| `ProcessamentoRemoto:FilaResultadosOsUrl` | Contrato existente `api/entrada_queue_url`, do owner OS. |
+
+Essas chaves são configuração do runtime, não novos parâmetros SSM. As duas URLs devem ser HTTPS/FIFO válidas, distintas, do endpoint SQS da conta/região configuradas e sem porta alternativa. Configuração incompleta ou destino divergente bloqueia antes do STS. O host não consulta SSM nem cria tabela/filas; a futura esteira deverá resolver os contratos e fornecer os valores, conferindo ownership/nome dos recursos. Nenhum desses parâmetros é acrescentado aos manifests/Terraform nesta entrega.
+
+O objeto `ClientesAwsAcademicos` é mantido vivo ao redor de `RunAsync` e descartado ao encerrar/sair do host; a DI recebe seus clientes sem assumir sua propriedade. O filtro HTTP reconhece o modo efetivamente composto após o STS, preservando JWT/perfis e casos de uso. No modo local, continua exigindo Development e processamento local habilitado, retornando 503 nos demais casos. Nenhum endpoint HTTP, body, evento ou política de acesso foi criado.
+
+Testes locais verificam configuração recusada antes de autenticar, exclusão entre modos, composição local padrão e disponibilidade do filtro por modo, além das regressões HTTP/persistência existentes. Não exercitam startup remoto bem-sucedido com IMDS/STS reais, descarte real dos clientes no Pod ou acesso DynamoDB/SQS do workload. STS confirma identidade, não permissões de banco/filas. Validação dessas permissões, renovação, FIFO/DLQ/outbox e ingestão Datadog continua obrigatória na janela autorizada antes de apresentar o remoto como operacional.
+
+`AWS_DEPLOY_ENABLED=false` permanece; sem alteração de workflows, manifests, Terraform, IAM ou exposição Gateway. O PR integra código apto à configuração explícita, sem habilitar o workload atual. A integração pública e os produtores dos outros serviços continuam nas frentes acordadas.
+
+Validação local: 299 testes aprovados, nenhum ignorado; cobertura consolidada 94,90% (1285/1354). Restore/build Release sem avisos e formato verificado. O gate de 90% permanece; caminhos de startup remoto real não foram executados nem excluídos. Diff/gate de estrutura e CI do PR devem ser conferidos antes do merge.
