@@ -80,7 +80,7 @@ public class ServicoTests
         var servico = CriarServicoEmExecucao();
 
         // Act
-        var acao = servico.IniciarExecucao;
+        Action acao = servico.IniciarExecucao;
 
         // Assert
         acao.Should()
@@ -95,7 +95,7 @@ public class ServicoTests
         var servico = CriarServicoFinalizado();
 
         // Act
-        var acao = servico.IniciarExecucao;
+        Action acao = servico.IniciarExecucao;
 
         // Assert
         acao.Should()
@@ -125,7 +125,7 @@ public class ServicoTests
         var servico = Servico.Criar(Guid.NewGuid(), 150m);
 
         // Act
-        var acao = servico.Finalizar;
+        Action acao = servico.Finalizar;
 
         // Assert
         acao.Should()
@@ -140,7 +140,7 @@ public class ServicoTests
         var servico = CriarServicoFinalizado();
 
         // Act
-        var acao = servico.Finalizar;
+        Action acao = servico.Finalizar;
 
         // Assert
         acao.Should()

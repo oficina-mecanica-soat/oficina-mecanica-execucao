@@ -31,13 +31,15 @@ public sealed class CancelarPreparacaoUseCase(IUnidadeTrabalhoPreparacao unidade
             var atual = await sessao.ObterAtualAsync(mensagem.OrdemServicoId, ct);
             if (estado.PreparacaoId != dados.PreparacaoId || atual?.PreparacaoId != dados.PreparacaoId || estado.Cancelada)
                 throw new ContratoMensagemException("ESTADO_PREPARACAO_INCONSISTENTE");
+            if (estado.Execucao?.Reconstituir().IniciadaEm is not null)
+                throw new ContratoMensagemException("EXECUCAO_FISICA_INICIADA");
 
             if (estado.Reservada)
             {
                 foreach (var item in estado.Snapshot.Itens)
                 {
                     var reserva = await sessao.ObterReservaAsync(mensagem.OrdemServicoId, item.ItemId, referencia.Versao, ct);
-                    if (reserva is null || reserva.PreparacaoId != dados.PreparacaoId || reserva.Liberada
+                    if (reserva is null || reserva.PreparacaoId != dados.PreparacaoId || reserva.Liberada || reserva.Baixada
                         || reserva.Quantidade != item.Quantidade || reserva.FilialId != estado.Snapshot.FilialId)
                         throw new DomainException("Reserva persistida inconsistente; compensação não confirmada.");
                     await sessao.SalvarReservaAsync(mensagem.OrdemServicoId, referencia.Versao, reserva with { Liberada = true }, false, ct);

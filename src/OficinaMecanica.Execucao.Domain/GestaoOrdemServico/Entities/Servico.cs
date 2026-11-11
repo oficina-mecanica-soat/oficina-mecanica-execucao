@@ -40,25 +40,46 @@ public sealed class Servico
         return new Servico(Guid.NewGuid(), servicoCatalogoId, valor);
     }
 
-    public void IniciarExecucao()
+    public static Servico Reconstituir(Guid id, Guid servicoCatalogoId, decimal valor, StatusServico status,
+        DateTime? dataInicio, DateTime? dataFim)
+    {
+        if (id == Guid.Empty || servicoCatalogoId == Guid.Empty || valor <= 0 || !Enum.IsDefined(status)
+            || (status == StatusServico.Pendente && (dataInicio is not null || dataFim is not null))
+            || (status == StatusServico.EmExecucao && (dataInicio is null || dataFim is not null))
+            || (status == StatusServico.Finalizado && (dataInicio is null || dataFim is null || dataFim < dataInicio))
+            || (dataInicio is not null && dataInicio.Value.Kind != DateTimeKind.Utc)
+            || (dataFim is not null && dataFim.Value.Kind != DateTimeKind.Utc))
+            throw new DomainException("Estado persistido do serviço é inválido.");
+        return new Servico(id, servicoCatalogoId, valor) { Status = status, DataInicio = dataInicio, DataFim = dataFim };
+    }
+
+    public void IniciarExecucao() => IniciarExecucao(DateTime.UtcNow);
+
+    public void IniciarExecucao(DateTime agora)
     {
         if (Status != StatusServico.Pendente)
         {
             throw new DomainException(OrdemServicoErrorMessages.ServicoPendenteParaIniciarExecucao);
         }
 
+        if (agora.Kind != DateTimeKind.Utc)
+            throw new DomainException("O início do serviço deve usar UTC.");
         Status = StatusServico.EmExecucao;
-        DataInicio = DateTime.UtcNow;
+        DataInicio = agora;
     }
 
-    public void Finalizar()
+    public void Finalizar() => Finalizar(DateTime.UtcNow);
+
+    public void Finalizar(DateTime agora)
     {
         if (Status != StatusServico.EmExecucao)
         {
             throw new DomainException(OrdemServicoErrorMessages.ServicoEmExecucaoParaFinalizar);
         }
 
+        if (agora.Kind != DateTimeKind.Utc || agora < DataInicio)
+            throw new DomainException("O fim do serviço deve usar UTC e não pode preceder o início.");
         Status = StatusServico.Finalizado;
-        DataFim = DateTime.UtcNow;
+        DataFim = agora;
     }
 }

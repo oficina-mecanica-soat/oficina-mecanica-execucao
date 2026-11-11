@@ -165,3 +165,11 @@ Build Release e 180 testes locais passaram sem avisos, erros ou testes ignorados
 PR #12 integrado. O incremento seguinte extrai a entidade `Servico`, enum `StatusServico`, quatro mensagens e dez cenários de teste da API, preservando nomes, transições e invariantes. Não altera OS, mensagens ou banco; não conecta ainda a entidade ao runtime/persistência e não conclui a F4-05. A origem e os limites estão em `extracao-preparacao.md`.
 
 A implementação de handlers depende de registrar a passagem entre `AutorizarExecucao`, ações físicas do mecânico e eventos/compensação. Gabriel confirmou a preservação do início manual do modelo DDD; o esclarecimento está em PR próprio da RFC. Este incremento extrai apenas a entidade e seus testes, sem antecipar handlers ou o corte público. A validação local passou em 190 testes, zero ignorados, cobertura consolidada de 96,70%, build sem avisos e formato verificado. AWS permanece desligada.
+
+## Atualização — autorização e ciclo físico persistidos
+
+API #335 e Execução #13 integrados em develop. Gabriel confirmou preservar `servicoId` e incluir `servicoCatalogoId` no snapshot; o ajuste da RFC segue em PR próprio antes do corte coordenado com o produtor OS. O Execução implementa autorização sem evento fictício, casos de uso internos de início/finalização manual e finalização explícita com baixa atômica. Reutiliza entidade e estoque extraídos, unidade de trabalho DynamoDB, deduplicação e outbox.
+
+Cancelamento pode confirmar antes do início físico; após ele, não libera reserva ou anuncia compensação. A disputa compara o mesmo documento/revisão. Os testes locais usam DynamoDB Local, concorrência forçada, falha de commit e verificação de saldo/estado/outbox; não comprovam SQS/IAM reais. Operações manuais ainda não possuem rotas/políticas HTTP, e o corte público fica para integração com OS/Gateway. Não declarar F4-05/F4-10 concluídas sem essas etapas.
+
+Nenhum workflow, recurso Terraform, contrato SSM ou ativação de workload remoto muda. AWS permanece bloqueada, sem consultas/apply/destroy. Merges exclusivamente por Gabriel; avisar antes da janela de laboratório.

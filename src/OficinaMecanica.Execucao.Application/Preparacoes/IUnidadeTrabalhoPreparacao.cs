@@ -13,6 +13,8 @@ public interface ISessaoPreparacao
 {
     IEstoqueRepository Estoque { get; }
     Task<Mensagem?> ObterResultadoAsync(Mensagem mensagem, int versao, string hash, CancellationToken ct);
+    Task RegistrarRecebimentoAsync(Guid identificador, string hash, CancellationToken ct);
+    Task AdicionarResultadoAsync(Mensagem resultado, CancellationToken ct);
     Task<PreparacaoAtual?> ObterAtualAsync(Guid osId, CancellationToken ct);
     Task<ReferenciaPreparacao?> ObterReferenciaAsync(Guid preparacaoId, CancellationToken ct);
     Task<EstadoPreparacao?> ObterPreparacaoAsync(Guid osId, int versao, CancellationToken ct);

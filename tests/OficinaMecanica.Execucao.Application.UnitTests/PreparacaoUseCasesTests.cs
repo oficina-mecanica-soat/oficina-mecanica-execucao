@@ -163,7 +163,7 @@ public sealed class PreparacaoUseCasesTests
 
         public Cenario()
         {
-            Dados = new(1, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), [new(ItemId, 3)], [new(Guid.NewGuid(), "Troca de óleo", 125.50m)]);
+            Dados = new(1, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), [new(ItemId, 3)], [new(Guid.NewGuid(), "Troca de óleo", 125.50m, Guid.NewGuid())]);
             Item = ItemEstoque.Criar(ItemId, 10);
             Saldo = Domain.GestaoEstoque.Aggregates.Estoque.Criar([Item]);
             Sessao.SetupGet(sessao => sessao.Estoque).Returns(Estoque.Object);
