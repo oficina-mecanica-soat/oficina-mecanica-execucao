@@ -308,7 +308,7 @@ Os adaptadores recebem tabela/URLs e clientes prontos. Não consultam SSM/Secret
 
 ### Decisão e validação ainda necessárias
 
-A ADR-0025 condiciona identidade à capacidade real do laboratório, sem escolher IRSA, EKS Pod Identity ou uso da role dos nodes. Este levantamento não altera essa decisão. IRSA/Pod Identity são mecanismos possíveis de identidade por service account, mas dependem de trust, permissões e componentes ainda não comprovados. Qualquer restrição acadêmica que leve ao uso de identidade compartilhada precisa de alinhamento explícito e registro das limitações; não ativar fallback silencioso para credenciais dos nodes ou transportar credenciais do runner para o Pod.
+O levantamento inicial deixou o mecanismo condicionado ao laboratório. Em 11/11/2026, Gabriel aprovou a exceção acadêmica integrada na [API #347](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/347): identidade existente dos nodes (`LabRole`) para o Execução, sem isolamento IAM por aplicação. Não autoriza alteração de roles/trust ou extensão automática aos demais serviços. IRSA/Pod Identity permanecem evolução para ambiente com capacidade apropriada. Não transportar credenciais do runner para o Pod nem aceitar fallback silencioso.
 
 Antes de implementar a integração remota:
 
@@ -318,6 +318,20 @@ Antes de implementar a integração remota:
 4. Pelas esteiras existentes, validar a identidade dentro do workload, acesso à tabela própria, consumo/renovação/ACK da entrada e publicação à OS, com dados de teste isolados. Testar limites de acesso quando viável; sucesso em um recurso não comprova isolamento dos demais.
 5. Comprovar reinício/outbox, duplicata, FIFO/DLQ e encerramento; preservar as mensagens/dados da demonstração e os guardrails de teardown. Registrar somente evidências não sensíveis. O SDK simulado/DynamoDB Local não substitui essa prova.
 
-**Limite do trabalho offline:** matriz e critérios ficam preparados, mas não há mecanismo de identidade aprovado ou validado. Para resolver a capacidade efetiva de IAM e avançar na ativação remota, será necessário avisar Gabriel para criar o laboratório e atualizar os environments. `AWS_DEPLOY_ENABLED=false` permanece; nenhum recurso, segredo, política, workflow ou cliente de produção foi alterado.
+**Estado após a decisão:** mecanismo acadêmico aprovado na ADR-0025; prova dentro do Pod ainda pendente. O laboratório foi disponibilizado para consultas de leitura, sem autorização de deploy/apply/destroy. O componente de clientes abaixo prepara a implementação sem ativar o host. `AWS_DEPLOY_ENABLED=false` permanece; recursos, secrets, políticas e workflows não foram alterados.
 
 Referências primárias: [IAM em transações DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html), [permissões de ações SQS](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-api-permissions-reference.html) e [identidade e acesso no EKS](https://docs.aws.amazon.com/eks/latest/best-practices/identity-and-access-management.html). As referências descrevem capacidades AWS, não comprovam disponibilidade no Academy.
+
+## Clientes AWS com identidade acadêmica — preparação sem ativação
+
+`ClientesAwsAcademicos.CriarAsync(regiao, contaEsperada, ct)` utiliza explicitamente `InstanceProfileAWSCredentials("LabRole")`, sem cadeia de credenciais por environment/perfil. Antes de construir os clientes DynamoDB/SQS, consulta `GetCallerIdentity` no STS com essa mesma fonte e exige resposta confirmada, conta esperada e ARN de sessão `assumed-role/LabRole/...`. Rejeita usuário IAM, role de runner (`voclabs`), outra conta/role, ARN incompleto e resposta sem confirmação. A conta esperada é parâmetro obrigatório independente da identidade observada; não é derivada da própria resposta que se pretende validar.
+
+Credenciais ausentes, falha técnica ou cancelamento interrompem a criação; não retornam clientes por fallback. O SDK mantém a renovação das credenciais do instance profile. Não registra nem persiste tokens/chaves. O objeto retornado é dono dos clientes/credenciais e deve viver até o encerramento do host: chamar `AddInfrastructureRemota` com seus clientes não transfere esse descarte à composição existente. A dependência `AWSSDK.SecurityToken` 4.0.101.6 segue a família v4 dos adaptadores atuais; Domain/Application permanecem sem dependência de autenticação AWS.
+
+Este componente **não é chamado pelo Program nem registrado na DI atual**. O host mantém o modo local anterior; ações autorizadas fora desse modo continuam em 503. Não há nova variável, ARN de conta real versionado, acesso SSM no runtime ou alteração de IAM, metadados dos nodes, Terraform, manifests ou pipelines. O próximo incremento deverá conectar o host/configuração e a disponibilidade remota explicitamente, preservando autenticação e validações.
+
+Os testes usam STS simulado e verificam aceitação/rejeição de identidade, propagação de falhas/cancelamento e configuração inválida antes de obter credenciais. Não consultam metadados EC2 ou STS reais e não comprovam IMDS acessível, renovação no Pod ou permissões de banco/filas. A construção bem-sucedida real dos clientes e seu descarte na integração do host permanecem para validação posterior. A prova acadêmica exige implantação autorizada e acesso real à tabela/fila próprias e publicação à OS. A concessão continua sem isolamento IAM entre aplicações com acesso às credenciais dos nodes.
+
+Referência de implementação: [InstanceProfileAWSCredentials no AWS SDK .NET v4](https://docs.aws.amazon.com/sdkfornet/v4/apidocs/items/Runtime/TInstanceProfileAWSCredentials.html), que distingue essa fonte explícita do provider usado na cadeia de fallback.
+
+Validação local deste incremento: 280 testes aprovados, nenhum ignorado, cobertura consolidada 95,17% (1260/1324), restore/build Release sem avisos e formato verificado. Gate de estrutura e diff aprovados. Caminhos de IMDS/construção real dos clientes não foram executados para evitar autenticação real nos testes; não foram excluídos da cobertura. O gate do CI permanece em 90%.
