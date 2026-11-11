@@ -27,11 +27,12 @@ internal static class OperacoesExecucao
     public static string HashAcao<T>(string tipo, T request) => Convert.ToHexString(SHA256.HashData(
         Encoding.UTF8.GetBytes(JsonContrato.Serializar(new { Tipo = tipo, Dados = request }))));
 
-    public static Mensagem Evento<T>(EstadoPreparacao estado, Guid acaoId, string tipo, T dados, TimeProvider relogio)
+    public static Mensagem Evento<T>(EstadoPreparacao estado, Guid acaoId, string tipo, T dados, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null)
     {
         var origem = estado.Autorizacao!.Origem;
         return new(Guid.CreateVersion7(), tipo, 1, origem.SagaId, origem.OrdemServicoId, origem.CorrelationId,
-            acaoId, relogio.GetUtcNow(), JsonSerializer.SerializeToElement(dados, JsonContrato.Options));
+            acaoId, relogio.GetUtcNow(), JsonSerializer.SerializeToElement(dados, JsonContrato.Options),
+            ContextoTrace.Filtrar(observabilidade?.CapturarContexto()) ?? ContextoTrace.Filtrar(origem.TraceContext));
     }
 
     public static ExecucaoResponse Resposta(EstadoPreparacao estado, Domain.GestaoOrdemServico.Aggregates.Execucao execucao)

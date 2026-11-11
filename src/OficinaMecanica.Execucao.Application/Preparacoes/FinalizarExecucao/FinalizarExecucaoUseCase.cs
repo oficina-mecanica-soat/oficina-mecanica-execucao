@@ -6,7 +6,7 @@ using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
 namespace OficinaMecanica.Execucao.Application.Preparacoes.FinalizarExecucao;
 
 public sealed class FinalizarExecucaoUseCase(IUnidadeTrabalhoPreparacao unidadeTrabalho,
-    IValidator<FinalizarExecucaoRequest> validator, TimeProvider relogio)
+    IValidator<FinalizarExecucaoRequest> validator, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null)
 {
     public async Task<ExecucaoResponse> ExecuteAsync(FinalizarExecucaoRequest request, CancellationToken ct = default)
     {
@@ -32,7 +32,7 @@ public sealed class FinalizarExecucaoUseCase(IUnidadeTrabalhoPreparacao unidadeT
                 estado with { Execucao = CicloExecucaoPersistido.De(execucao) }, ct);
             await sessao.AdicionarResultadoAsync(OperacoesExecucao.Evento(estado, request.OperacaoId, "ExecucaoFinalizada",
                 new ExecucaoFinalizada(estado.PreparacaoId, estado.Autorizacao!.VersaoOrcamento,
-                    new DateTimeOffset(execucao.FinalizadaEm!.Value)), relogio), ct);
+                    new DateTimeOffset(execucao.FinalizadaEm!.Value)), relogio, observabilidade), ct);
             return OperacoesExecucao.Resposta(estado, execucao);
         }, ct);
     }

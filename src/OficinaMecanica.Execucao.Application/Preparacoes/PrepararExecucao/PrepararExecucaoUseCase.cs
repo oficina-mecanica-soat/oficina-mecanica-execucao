@@ -8,7 +8,7 @@ using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
 namespace OficinaMecanica.Execucao.Application.Preparacoes.PrepararExecucao;
 
 public sealed class PrepararExecucaoUseCase(IUnidadeTrabalhoPreparacao unidadeTrabalho,
-    IValidator<PrepararExecucaoRequest> validator, TimeProvider relogio)
+    IValidator<PrepararExecucaoRequest> validator, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null)
 {
     public async Task<PrepararExecucaoResponse> ExecuteAsync(PrepararExecucaoRequest request, CancellationToken ct = default)
     {
@@ -38,12 +38,12 @@ public sealed class PrepararExecucaoUseCase(IUnidadeTrabalhoPreparacao unidadeTr
                 PreparacaoEstoque.Reservar(preparacaoId, mensagem.OrdemServicoId, dados.FilialId,
                     dados.Itens.Select(item => new ItemReserva(item.ItemId, item.Quantidade)), estoque);
                 resultado = ResultadosPreparacao.Criar(mensagem, "ExecucaoPreparada", new ExecucaoPreparada(preparacaoId,
-                    dados.Versao, dados.Itens, new(dados.VeiculoId, dados.MecanicoId, dados.Servicos)), relogio);
+                    dados.Versao, dados.Itens, new(dados.VeiculoId, dados.MecanicoId, dados.Servicos)), relogio, observabilidade);
             }
             catch (DomainException error) when (error.Message == EstoqueErrorMessages.EstoqueInsuficiente)
             {
                 reservada = false;
-                resultado = ResultadosPreparacao.Criar(mensagem, "PreparacaoRecusada", new PreparacaoRecusada(dados.Versao, "ESTOQUE_INSUFICIENTE"), relogio);
+                resultado = ResultadosPreparacao.Criar(mensagem, "PreparacaoRecusada", new PreparacaoRecusada(dados.Versao, "ESTOQUE_INSUFICIENTE"), relogio, observabilidade);
             }
 
             if (reservada)

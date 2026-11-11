@@ -4,7 +4,8 @@ using System.Text.Json.Serialization;
 namespace OficinaMecanica.Execucao.Application.Mensagens;
 
 public sealed record Mensagem(Guid MensagemId, string Tipo, int Versao, Guid SagaId,
-    Guid OrdemServicoId, string CorrelationId, Guid CausationId, DateTimeOffset OcorridoEm, JsonElement Dados);
+    Guid OrdemServicoId, string CorrelationId, Guid CausationId, DateTimeOffset OcorridoEm, JsonElement Dados,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Dictionary<string, string>? TraceContext = null);
 public sealed record PrepararExecucao(int Versao, Guid FilialId, Guid VeiculoId, Guid MecanicoId,
     ItemSolicitado[] Itens, ServicoSolicitado[] Servicos);
 public sealed record ItemSolicitado(Guid ItemId, int Quantidade);
