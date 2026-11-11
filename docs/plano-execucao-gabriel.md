@@ -151,3 +151,11 @@ Há testes de contrato com cliente SDK simulado, relógio controlado e integraç
 ### Padronização obrigatória de estrutura — 10/11/2026
 
 Por orientação explícita de Gabriel, as pastas de scripts foram removidas da API e do Execução. Lógica operacional e testes são mantidos nos workflows existentes; arquivos temporários são gerados fora do conteúdo versionado. O gate de Git Flow impede pastas de scripts e novos diretórios de topo em todo PR. Não acrescentar estruturas auxiliares sem alinhamento. Esta reorganização não altera recursos de infraestrutura, contratos de mensagens ou regras de negócio; AWS permanece desabilitada.
+
+## Atualização — composição remota sem ativação
+
+Após os PRs de estrutura e fluxo de trabalho, a preparação da F4-04 conecta os componentes existentes em `AddInfrastructureRemota`, com clientes DynamoDB/SQS fornecidos explicitamente pelo host. `ProcessamentoRemotoWorker` mantém consumo e publicação independentes, escopos por tentativa e encerramento cooperativo. O modo remoto não cria tabela nem clientes AWS; não escolhe credencial/role e impede registro simultâneo com o modo local. O README detalha os contratos aprovados de Execução e OS usados como origem das opções.
+
+O host atual permanece no modo anterior: nenhuma variável ativa o remoto, e `Program.cs`, Terraform, manifests e esteiras não mudam neste incremento. A definição e prova da identidade IAM continuam necessárias antes de integrar a ativação no workload. O contrato de resultados da OS já foi aprovado na API #328, mas sua publicação real ainda exige apply autorizado. Não usar credenciais do runner ou role dos nodes por suposição.
+
+Build Release e 180 testes locais passaram sem avisos, erros ou testes ignorados; DynamoDB Local e SQS simulado verificam retomada de outbox durante long polling, falhas de recepção/envio, ACK após persistência e encerramento. Esses testes não comprovam IAM/FIFO/DLQ reais. AWS permanece bloqueada; avisar Gabriel antes de precisar do laboratório. A F4-04/F4-05 ainda inclui ativação/prova remota e as regras de autorização/início/finalização física seguintes.
