@@ -1,0 +1,144 @@
+{
+  "info": {
+    "name": "Oficina Mecânica — Execução manual local",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Usar após preparar/autorizar pela mensageria local. Preencher JWT válido de Administrador/Mecanico e IDs do estado local. Cada ação usa seu próprio OperacaoId UUID; preservá-lo nas repetições e usar IDs distintos entre ações. Sem credenciais embutidas ou geração automática de tokens. 202 confirma somente commit local; Location permite GET. Sem corte de Gateway ou prova AWS."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5094",
+      "type": "string"
+    },
+    {
+      "key": "jwt",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "ordemServicoId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "preparacaoId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "servicoId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "iniciarOperacaoId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "finalizarServicoOperacaoId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "finalizarExecucaoOperacaoId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health HTTP",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/health",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "Consultar estado local",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/execucoes/{{ordemServicoId}}/preparacoes/{{preparacaoId}}"
+      }
+    },
+    {
+      "name": "Iniciar serviço manualmente",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/v1/execucoes/{{ordemServicoId}}/preparacoes/{{preparacaoId}}/servicos/{{servicoId}}/iniciar-execucao",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"operacaoId\": \"{{iniciarOperacaoId}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Finalizar serviço individual",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/v1/execucoes/{{ordemServicoId}}/preparacoes/{{preparacaoId}}/servicos/{{servicoId}}/finalizar",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"operacaoId\": \"{{finalizarServicoOperacaoId}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Finalizar execução e baixar estoque",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/v1/execucoes/{{ordemServicoId}}/preparacoes/{{preparacaoId}}/finalizar",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"operacaoId\": \"{{finalizarExecucaoOperacaoId}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

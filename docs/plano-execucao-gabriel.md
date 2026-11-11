@@ -173,3 +173,11 @@ API #335 e Execução #13 integrados em develop. Gabriel confirmou preservar `se
 Cancelamento pode confirmar antes do início físico; após ele, não libera reserva ou anuncia compensação. A disputa compara o mesmo documento/revisão. Os testes locais usam DynamoDB Local, concorrência forçada, falha de commit e verificação de saldo/estado/outbox; não comprovam SQS/IAM reais. Operações manuais ainda não possuem rotas/políticas HTTP, e o corte público fica para integração com OS/Gateway. Não declarar F4-05/F4-10 concluídas sem essas etapas.
 
 Nenhum workflow, recurso Terraform, contrato SSM ou ativação de workload remoto muda. AWS permanece bloqueada, sem consultas/apply/destroy. Merges exclusivamente por Gabriel; avisar antes da janela de laboratório.
+
+## Atualização — HTTP manual local
+
+API #338 e Execução #14 integrados em develop. Gabriel aprovou preservar os sufixos das ações do mecânico sob `/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`, body OperacaoId, 202 após commit/Location e GET do estado. Perfis Administrador/Mecanico preservados da API; contrato em PR próprio da RFC. Este incremento conecta o controller, consulta, erros seguros e testes HTTP/JWT com DynamoDB Local, reutilizando as regras persistidas.
+
+245 testes locais aprovados, zero ignorados, cobertura consolidada 97,04%, build/formato e gate de estrutura devem ser conferidos antes de publicar. OpenAPI/Postman locais descrevem somente Execução. O host atual aceita operações apenas no modo local habilitado em Development; identidade autorizada recebe 503 fora dele, sem resolver persistência por fallback.
+
+Geovanna mantém emissores JWT e Gateway na F4-09, produtor OS na F4-06 e corte coordenado. Não foi ativado acesso remoto nem alterado o edge; testes locais não comprovam login/emissor real, SQS/IAM ou AWS. Pipelines, Terraform e manifests permanecem sem alteração; avisar Gabriel antes da janela e deixar merges exclusivamente com ele.

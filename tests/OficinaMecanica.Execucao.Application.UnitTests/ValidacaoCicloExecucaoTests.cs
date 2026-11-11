@@ -5,11 +5,23 @@ using OficinaMecanica.Execucao.Application.Preparacoes.AutorizarExecucao;
 using OficinaMecanica.Execucao.Application.Preparacoes.IniciarExecucaoServico;
 using OficinaMecanica.Execucao.Application.Preparacoes.FinalizarServico;
 using OficinaMecanica.Execucao.Application.Preparacoes.FinalizarExecucao;
+using OficinaMecanica.Execucao.Application.Preparacoes.ObterExecucao;
 
 namespace OficinaMecanica.Execucao.Application.UnitTests;
 
 public sealed class ValidacaoCicloExecucaoTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Dado_IdDeConsultaVazio_Quando_Consultar_Entao_NaoAbreTransacao(bool osVazia)
+    {
+        var unidade = new Mock<IUnidadeTrabalhoPreparacao>(MockBehavior.Strict);
+        await Assert.ThrowsAsync<ContratoMensagemException>(() => new ObterExecucaoUseCase(unidade.Object,
+            new ObterExecucaoValidator()).ExecuteAsync(new(osVazia ? Guid.Empty : Guid.NewGuid(), osVazia ? Guid.NewGuid() : Guid.Empty)));
+        unidade.VerifyNoOtherCalls();
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

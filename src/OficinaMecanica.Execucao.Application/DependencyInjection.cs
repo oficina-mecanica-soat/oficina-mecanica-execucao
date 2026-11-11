@@ -7,6 +7,7 @@ using OficinaMecanica.Execucao.Application.Preparacoes.AutorizarExecucao;
 using OficinaMecanica.Execucao.Application.Preparacoes.IniciarExecucaoServico;
 using OficinaMecanica.Execucao.Application.Preparacoes.FinalizarServico;
 using OficinaMecanica.Execucao.Application.Preparacoes.FinalizarExecucao;
+using OficinaMecanica.Execucao.Application.Preparacoes.ObterExecucao;
 
 namespace OficinaMecanica.Execucao.Application;
 
@@ -22,6 +23,7 @@ public static class DependencyInjection
         services.AddScoped<IniciarExecucaoServicoUseCase>();
         services.AddScoped<FinalizarServicoUseCase>();
         services.AddScoped<FinalizarExecucaoUseCase>();
+        services.AddScoped<ObterExecucaoUseCase>();
         services.AddScoped<ProcessadorPreparacao>();
         return services;
     }
