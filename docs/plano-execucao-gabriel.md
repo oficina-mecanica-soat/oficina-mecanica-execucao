@@ -181,3 +181,9 @@ API #338 e Execução #14 integrados em develop. Gabriel aprovou preservar os su
 245 testes locais aprovados, zero ignorados, cobertura consolidada 97,04%, build/formato e gate de estrutura devem ser conferidos antes de publicar. OpenAPI/Postman locais descrevem somente Execução. O host atual aceita operações apenas no modo local habilitado em Development; identidade autorizada recebe 503 fora dele, sem resolver persistência por fallback.
 
 Geovanna mantém emissores JWT e Gateway na F4-09, produtor OS na F4-06 e corte coordenado. Não foi ativado acesso remoto nem alterado o edge; testes locais não comprovam login/emissor real, SQS/IAM ou AWS. Pipelines, Terraform e manifests permanecem sem alteração; avisar Gabriel antes da janela e deixar merges exclusivamente com ele.
+
+## Atualização — preparação de observabilidade F4-11
+
+API #341 e Execução #15 integrados em develop. Gabriel aprovou contexto opcional persistido no envelope. O próximo par de PRs registra o contrato na RFC e implementa no Execução: logs JSON/HTTP, correlação funcional, escopos Datadog nativos, contexto filtrado na outbox e configuração futura do Pod. Reutiliza padrões vigentes da API, sem alterar esteiras ou nomes de componentes.
+
+Ordem de revisão/merge: contrato documental da API, depois implementação do Execução. Gabriel realiza ambos. Consumidores estritos precisam aceitar o metadado antes do corte coordenado; esta entrega não muda produtor OS/Gateway ou ativa acesso remoto. A F4-11 permanece parcial: ingestão real, impacto do profiler, métricas/painéis e alertas precisam de evidência e janela autorizada. AWS continua bloqueada; avisar antes de precisar de novo laboratório.

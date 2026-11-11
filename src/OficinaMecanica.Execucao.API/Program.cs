@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Mvc;
 using OficinaMecanica.Execucao.API.Extensions.Responses;
+using OficinaMecanica.Execucao.API.Extensions.Configuration;
 using OficinaMecanica.Execucao.API.Filters;
 using OficinaMecanica.Execucao.API.Middlewares;
 using OficinaMecanica.Execucao.API.Responses;
@@ -13,6 +14,7 @@ using OficinaMecanica.Execucao.Application;
 using OficinaMecanica.Execucao.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddApiObservability();
 
 builder.Services.AddOptions<JwtOptions>()
     .BindConfiguration("Jwt")
@@ -74,6 +76,7 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
+app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<GlobalExceptionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();

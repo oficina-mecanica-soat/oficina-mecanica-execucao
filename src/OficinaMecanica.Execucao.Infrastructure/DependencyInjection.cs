@@ -3,11 +3,14 @@ using Amazon.SQS;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Preparacoes;
 using OficinaMecanica.Execucao.Infrastructure.Hosting;
 using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using OficinaMecanica.Execucao.Infrastructure.Persistencia;
+using OficinaMecanica.Execucao.Infrastructure.Observabilidade;
 
 namespace OficinaMecanica.Execucao.Infrastructure;
 
@@ -16,6 +19,8 @@ public static class DependencyInjection
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         ValidarComposicaoUnica(services);
+        services.AddSingleton<IObservabilidadeExecucao>(provider => new ObservabilidadeDatadog(
+            provider.GetService<ILogger<ObservabilidadeDatadog>>() ?? NullLogger<ObservabilidadeDatadog>.Instance));
         services.Configure<ProcessamentoLocalOptions>(configuration.GetSection("ProcessamentoLocal"));
         services.AddSingleton(provider => DynamoDbLocal.CriarClient(provider.GetRequiredService<IOptions<ProcessamentoLocalOptions>>().Value.Endpoint));
         services.AddScoped<IArmazenamentoExecucao>(provider => new ArmazenamentoDynamoDb(provider.GetRequiredService<AmazonDynamoDBClient>(), provider.GetRequiredService<IOptions<ProcessamentoLocalOptions>>().Value.Tabela));
@@ -35,6 +40,9 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(sqs);
         options.Validar();
         ValidarComposicaoUnica(services);
+
+        services.AddSingleton<IObservabilidadeExecucao>(provider => new ObservabilidadeDatadog(
+            provider.GetService<ILogger<ObservabilidadeDatadog>>() ?? NullLogger<ObservabilidadeDatadog>.Instance));
 
         // O host fornece clientes cuja identidade foi definida e validada separadamente.
         // Instâncias fornecidas pelo chamador continuam sob sua responsabilidade de descarte.

@@ -11,11 +11,25 @@ using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Persistencia;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Entities;
 using OficinaMecanica.Execucao.Infrastructure.Persistencia;
+using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 
 namespace OficinaMecanica.Execucao.API.IntegrationTests;
 
 public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixture<HttpDynamoDbFixture>
 {
+    [Fact]
+    public async Task Dado_TraceHttp_Quando_IniciarServico_Entao_PersisteContextoNaOutbox()
+    {
+        await using var c = await Cenario.CriarAsync(fixture);
+        await c.AutorizarAsync();
+        const string trace = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        c.Client.DefaultRequestHeaders.Add("traceparent", trace);
+        using var resposta = await c.AcaoAsync("iniciar-execucao");
+        Assert.Equal(HttpStatusCode.Accepted, resposta.StatusCode);
+        var evento = Assert.Single((await c.ResultadosAsync()), m => m.Tipo == "ExecucaoIniciada");
+        Assert.Equal(trace, Assert.Single(evento.TraceContext!).Value);
+    }
+
     [Theory]
     [InlineData("Mecanico")]
     [InlineData("Administrador")]
@@ -162,6 +176,14 @@ public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixt
         public Task<HttpResponseMessage> AcaoAsync(string acao, Guid? operacao = null) => Client.PostAsJsonAsync(
             Recurso + $"/servicos/{ServicoId:D}/{acao}", new { operacaoId = operacao ?? Guid.NewGuid() });
         public Task<HttpResponseMessage> FinalizarAsync() => Client.PostAsJsonAsync(Recurso + "/finalizar", new { operacaoId = Guid.NewGuid() });
+        public async Task<List<Mensagem>> ResultadosAsync()
+        {
+            using var scope = factory.Services.CreateScope();
+            var transporte = new Capturador();
+            var publicador = new PublicadorOutbox(scope.ServiceProvider.GetRequiredService<IArmazenamentoExecucao>(), transporte, TimeProvider.System);
+            while (await publicador.PublicarProximaAsync()) { }
+            return transporte.Mensagens;
+        }
         public async Task<EstadoPreparacao> EstadoAsync()
         {
             using var scope = factory.Services.CreateScope();
@@ -173,6 +195,16 @@ public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixt
             return (await scope.ServiceProvider.GetRequiredService<IArmazenamentoExecucao>().ObterAsync(ChavesExecucao.Estoque(FilialId, ItemId), default)).Ler<SaldoEstoque>()!;
         }
         public async ValueTask DisposeAsync() { client.Dispose(); await factory.DisposeAsync(); }
+    }
+
+    private sealed class Capturador : ITransporteResultado
+    {
+        public List<Mensagem> Mensagens { get; } = [];
+        public Task PublicarAsync(Mensagem mensagem, CancellationToken cancellationToken)
+        {
+            Mensagens.Add(mensagem);
+            return Task.CompletedTask;
+        }
     }
 }
 

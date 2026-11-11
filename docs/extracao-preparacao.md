@@ -101,3 +101,11 @@ O controller conecta as mesmas ações manuais já persistidas e só responde 20
 Os novos testes exercitam HTTP/JWT real no TestServer e DynamoDB Local: ciclo completo por Administrador/Mecanico, consulta pendente/cancelada/histórica, repetição, baixa, IDs/corpos inválidos, 401/403 e bloqueio antes da persistência, 404, 409, 422 e falha técnica sanitizada. O worker de arquivos é removido somente do host de teste HTTP para isolar transporte; criação da tabela e persistência são reais no container. O pacote Testcontainers e o pin SSH.NET são os mesmos da referência de infraestrutura. Suíte completa: 245 testes, nenhum ignorado, cobertura local consolidada 97,04%, build/formato aprovados.
 
 OpenAPI/collection locais ficam diretamente em docs, sem pastas auxiliares. Não foram modificados Gateway, Terraform, manifests ou workflows. Validar integração de emissor/audience/chave, produtor OS e corte público com Geovanna; não declarar F4-09/F4-10 concluídas pelo HTTP local. AWS permanece bloqueada.
+
+## Observabilidade posterior — F4-11
+
+Reaproveita a configuração Serilog, JSON, tags de serviço e política de correlação funcional da API conforme ADR-0021/RFC-0006. Adaptadores nativos Datadog ficam na Infrastructure/API; Application define somente a porta de observabilidade. Domain permanece independente. O contexto opcional aprovado na RFC-0007 é filtrado antes da persistência e do envio, contendo apenas `traceparent` válido. Não altera chaves, hash de negócio, saldo, regras físicas ou semântica de repetição.
+
+O contexto capturado acompanha o evento na transação da outbox. Reentrega com outro trace não substitui resultado já confirmado; reinício/falha depois do envio preservam contexto e IDs. O HTTP preserva cabeçalho válido como metadado mesmo sem profiler; isso não produz spans Datadog fictícios. Os testes cobrem filtragem, ausência/invalidade, isolamento entre escopos, HTTP até outbox, reinício/repetição e sanitização de logs reais do host.
+
+A configuração futura do Pod segue a referência API, com biblioteca 3.50.0, tags/versão da imagem, logs do container `execucao`, propagação W3C e query desabilitada. Não altera recursos AWS, IAM/SSM, pipelines ou ativação remota. A instrumentação nativa e ingestão APM reais exigem profiler injetado e Agent acessível; permanecem sem prova local e dependem de laboratório autorizado.

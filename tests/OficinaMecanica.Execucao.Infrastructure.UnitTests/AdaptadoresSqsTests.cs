@@ -246,6 +246,30 @@ public sealed class AdaptadoresSqsTests
         "correlacao-de-teste", Guid.NewGuid(), DateTimeOffset.UtcNow, JsonSerializer.SerializeToElement(new { versao = 1 }));
 
     [Fact]
+    public async Task Dado_CarrierComCamposLivres_Quando_EnviarSqs_Entao_SerializaSomenteTraceparentSemAlterarDeduplicacao()
+    {
+        var client = new Mock<IAmazonSQS>();
+        SendMessageRequest? enviada = null;
+        client.Setup(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<SendMessageRequest, CancellationToken>((pedido, _) => enviada = pedido)
+            .ReturnsAsync(new SendMessageResponse { HttpStatusCode = HttpStatusCode.OK, MessageId = "confirmado" });
+        var mensagem = MensagemValida() with
+        {
+            TraceContext = new()
+            {
+                ["traceparent"] = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                ["Authorization"] = "segredo-ficticio",
+                ["baggage"] = "cpf=12345678901"
+            }
+        };
+        await new TransporteSqs(client.Object, FilaOs).PublicarAsync(mensagem, default);
+        Assert.Equal(mensagem.MensagemId.ToString("D"), enviada!.MessageDeduplicationId);
+        Assert.Single(JsonContrato.Ler<Mensagem>(enviada.MessageBody).TraceContext!);
+        Assert.DoesNotContain("segredo-ficticio", enviada.MessageBody);
+        Assert.DoesNotContain("12345678901", enviada.MessageBody);
+    }
+
+    [Fact]
     public async Task Dado_ComandoSemEventoImediato_Quando_ConfirmarProcessamento_Entao_ConfirmaEntradaSomenteAposCommit()
     {
         var c = new Cenario();

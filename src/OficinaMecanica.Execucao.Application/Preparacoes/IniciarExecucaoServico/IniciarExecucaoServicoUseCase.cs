@@ -5,7 +5,7 @@ using OficinaMecanica.Execucao.Application.Persistencia;
 namespace OficinaMecanica.Execucao.Application.Preparacoes.IniciarExecucaoServico;
 
 public sealed class IniciarExecucaoServicoUseCase(IUnidadeTrabalhoPreparacao unidadeTrabalho,
-    IValidator<IniciarExecucaoServicoRequest> validator, TimeProvider relogio)
+    IValidator<IniciarExecucaoServicoRequest> validator, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null)
 {
     public async Task<ExecucaoResponse> ExecuteAsync(IniciarExecucaoServicoRequest request, CancellationToken ct = default)
     {
@@ -22,7 +22,7 @@ public sealed class IniciarExecucaoServicoUseCase(IUnidadeTrabalhoPreparacao uni
                     estado with { Execucao = CicloExecucaoPersistido.De(execucao) }, ct);
                 if (!iniciada)
                     await sessao.AdicionarResultadoAsync(OperacoesExecucao.Evento(estado, request.OperacaoId, "ExecucaoIniciada",
-                        new ExecucaoIniciada(estado.PreparacaoId, estado.Autorizacao!.VersaoOrcamento), relogio), ct);
+                        new ExecucaoIniciada(estado.PreparacaoId, estado.Autorizacao!.VersaoOrcamento), relogio, observabilidade), ct);
             }
             return OperacoesExecucao.Resposta(estado, execucao);
         }, ct);
