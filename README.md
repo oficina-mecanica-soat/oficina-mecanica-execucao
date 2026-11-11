@@ -283,3 +283,41 @@ Os testes recriam a aplicação e seus serviços, mantendo a mesma tabela no con
 Nenhum código de produção, recurso, contrato, manifesto ou workflow muda neste incremento. Os testes entram no job existente e preservam o gate de 90%. AWS permanece bloqueada; identidade IAM, ativação remota e validações reais aguardam alinhamento/janela autorizada.
 
 Validação local deste incremento (11/11/2026): restore/build Release sem avisos/erros, formato verificado, 262 testes aprovados e nenhum ignorado; cobertura consolidada de 96,81% (1246/1287). Gate de estrutura aprovado, sem arquivos ou diretórios adicionados. O CI do PR confirma a evidência final do gate.
+
+## Identidade do workload — preparação offline da F4-04
+
+Levantamento em 11/11/2026 conforme ADR-0025. O repositório Kubernetes referencia roles existentes para o cluster e os nodes (`modules/eks/data.tf` e `node-group.tf`), com nomes parametrizados pelo laboratório. Não foi encontrada configuração de IRSA ou EKS Pod Identity na plataforma atual. Isso não comprova qual identidade um Pod obterá nem as permissões efetivas dessa identidade. Credenciais do runner usadas nas esteiras não constituem identidade da aplicação.
+
+### Permissões derivadas dos adaptadores atuais
+
+Esta matriz é requisito para revisão da futura política, não uma concessão aplicada nem autorização para alterar a role dos nodes. Os ARNs concretos devem vir dos recursos/contratos dos respectivos owners no ambiente autorizado.
+
+| Componente e chamada existente | Ação IAM necessária | Escopo do recurso |
+| --- | --- | --- |
+| `ArmazenamentoDynamoDb.GetItemAsync` | `dynamodb:GetItem` | Somente tabela do Execução. |
+| `ArmazenamentoDynamoDb.QueryAsync` (outbox) | `dynamodb:Query` | Mesma tabela; não há índice nessa consulta. |
+| `TransactWriteItemsAsync`, operações Put/Delete/ConditionCheck | `dynamodb:PutItem`, `dynamodb:DeleteItem`, `dynamodb:ConditionCheckItem` | Mesma tabela; avaliar condição `dynamodb:EnclosingOperation=TransactWriteItems` para restringir essas escritas à transação. |
+| `ConsumidorSqs.ReceiveMessageAsync` | `sqs:ReceiveMessage` | Somente entrada FIFO do Execução. |
+| `ConsumidorSqs.DeleteMessageAsync` | `sqs:DeleteMessage` | Mesma entrada, depois do commit. |
+| `ConsumidorSqs.ChangeMessageVisibilityAsync` | `sqs:ChangeMessageVisibility` | Mesma entrada, para renovação. |
+| `TransporteSqs.SendMessageAsync` | `sqs:SendMessage` | Somente entrada FIFO de resultados da OS, publicada pelo owner API. |
+
+O IAM do DynamoDB autoriza os componentes da transação; não inventar uma ação `dynamodb:TransactWriteItems` como substituição. O código atual não chama UpdateItem. Não requer Scan, criação/remoção de tabela/filas, purge, redrive ou consumo da DLQ. O redrive à DLQ é responsabilidade do SQS/configuração de infraestrutura. As permissões de provisionamento, verificação de deploy e operação controlada da DLQ pertencem à esteira, separadas deste mínimo do runtime.
+
+Os adaptadores recebem tabela/URLs e clientes prontos. Não consultam SSM/Secrets Manager, IAM ou STS para cada operação; não acrescentar essas permissões por suposição. A futura inicialização do host e o mecanismo de obtenção de credenciais podem exigir permissões próprias, a detalhar após a decisão de identidade. O runtime não deve receber permissão no banco da OS/cobrança. A fila de OS aceita somente publicação de resultados por este serviço.
+
+### Decisão e validação ainda necessárias
+
+A ADR-0025 condiciona identidade à capacidade real do laboratório, sem escolher IRSA, EKS Pod Identity ou uso da role dos nodes. Este levantamento não altera essa decisão. IRSA/Pod Identity são mecanismos possíveis de identidade por service account, mas dependem de trust, permissões e componentes ainda não comprovados. Qualquer restrição acadêmica que leve ao uso de identidade compartilhada precisa de alinhamento explícito e registro das limitações; não ativar fallback silencioso para credenciais dos nodes ou transportar credenciais do runner para o Pod.
+
+Antes de implementar a integração remota:
+
+1. Na janela autorizada, verificar as roles disponíveis e a capacidade de configurar trust/políticas/associação; registrar impedimentos sem expor credenciais. Acesso negado não equivale a recurso ausente. Conferir os controles de acesso a metadados dos nodes e a resolução real de credenciais pelo SDK.
+2. Alinhar com Gabriel o mecanismo e o isolamento viáveis, com impacto sobre a plataforma compartilhada. Registrar na arquitetura antes do PR de implementação. Não escolher/criar nomes de service account, role ou novos contratos SSM neste levantamento.
+3. Preparar PRs nos owners corretos e integrar o host explicitamente com os clientes aprovados; preservar a indisponibilidade remota atual até essa implementação. Não alterar os modos local/remoto por este documento.
+4. Pelas esteiras existentes, validar a identidade dentro do workload, acesso à tabela própria, consumo/renovação/ACK da entrada e publicação à OS, com dados de teste isolados. Testar limites de acesso quando viável; sucesso em um recurso não comprova isolamento dos demais.
+5. Comprovar reinício/outbox, duplicata, FIFO/DLQ e encerramento; preservar as mensagens/dados da demonstração e os guardrails de teardown. Registrar somente evidências não sensíveis. O SDK simulado/DynamoDB Local não substitui essa prova.
+
+**Limite do trabalho offline:** matriz e critérios ficam preparados, mas não há mecanismo de identidade aprovado ou validado. Para resolver a capacidade efetiva de IAM e avançar na ativação remota, será necessário avisar Gabriel para criar o laboratório e atualizar os environments. `AWS_DEPLOY_ENABLED=false` permanece; nenhum recurso, segredo, política, workflow ou cliente de produção foi alterado.
+
+Referências primárias: [IAM em transações DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html), [permissões de ações SQS](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-api-permissions-reference.html) e [identidade e acesso no EKS](https://docs.aws.amazon.com/eks/latest/best-practices/identity-and-access-management.html). As referências descrevem capacidades AWS, não comprovam disponibilidade no Academy.
