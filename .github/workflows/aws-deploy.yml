@@ -187,6 +187,13 @@ jobs:
             return unicos[0] || '';
           }
 
+          function validarFilaOs(url, arn, conta, regiao, ambiente) {
+            const nome = `oficina-mecanica-api-${ambiente}.fifo`;
+            if (!/^\d{12}$/.test(conta || '') || url !== `https://sqs.${regiao}.amazonaws.com/${conta}/${nome}`
+              || arn !== `arn:aws:sqs:${regiao}:${conta}:${nome}`)
+              throw new Error('Contrato da entrada de OS divergente do owner, ambiente, conta ou região.');
+          }
+
           function main({ env = process.env, consultarAws } = {}) {
             if (!['development', 'homologation', 'production'].includes(env.SSM_ENVIRONMENT_NAME))
               throw new Error('Ambiente SSM ausente ou inválido; operação bloqueada.');
@@ -195,7 +202,10 @@ jobs:
             let cluster = '';
             let imagem = `destroy-only:sha-${'0'.repeat(40)}`;
             let jwt = { jwt_secret: 'destroy-only-placeholder-000000000000', jwt_issuer: 'destroy-only', jwt_audience: 'destroy-only' };
+            let remoto = { processamento_remoto_habilitado: false, os_entrada_queue_url: '' };
             if (env.TERRAFORM_ACTION === 'apply') {
+              const habilitado = env.PROCESSAMENTO_REMOTO_HABILITADO || 'false';
+              if (!['true', 'false'].includes(habilitado)) throw new Error('Controle de processamento remoto inválido.');
               if (!env.JWT_SECRET || Buffer.byteLength(env.JWT_SECRET) < 32 || !env.JWT_ISSUER?.trim() || !env.JWT_AUDIENCE?.trim())
                 throw new Error('Configure os secrets/variables JWT do Environment antes do deploy.');
               const prefix = `/oficina-mecanica/${env.SSM_ENVIRONMENT_NAME}`;
@@ -209,15 +219,24 @@ jobs:
               validarRegistry(nome, url, real, env.AWS_ACCOUNT_ID, env.AWS_REGION);
               imagem = `${url}:sha-${env.GITHUB_SHA}`;
               jwt = { jwt_secret: env.JWT_SECRET, jwt_issuer: env.JWT_ISSUER, jwt_audience: env.JWT_AUDIENCE };
+              if (habilitado === 'true') {
+                if (parameter('status/api') !== 'ready') throw new Error('Infraestrutura de mensageria de OS ainda não está ready.');
+                const filaOs = parameter('api/entrada_queue_url');
+                const arnOs = parameter('api/entrada_queue_arn');
+                validarFilaOs(filaOs, arnOs, env.AWS_ACCOUNT_ID, env.AWS_REGION, env.SSM_ENVIRONMENT_NAME);
+                const arnReal = aws('sqs', 'get-queue-attributes', '--queue-url', filaOs, '--attribute-names', 'QueueArn', '--query', 'Attributes.QueueArn');
+                if (arnReal !== arnOs) throw new Error('Fila real de OS diverge do contrato SSM.');
+                remoto = { processamento_remoto_habilitado: true, os_entrada_queue_url: filaOs };
+              }
             } else if (env.TERRAFORM_ACTION === 'destroy') {
               const arquivo = path.join(dir, 'terraform.tfstate');
               if (fs.existsSync(arquivo)) cluster = clusterDoState(JSON.parse(fs.readFileSync(arquivo, 'utf8')));
             } else throw new Error('Ação Terraform inválida.');
-            const vars = { environment: env.SSM_ENVIRONMENT_NAME, ...jwt, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
+            const vars = { environment: env.SSM_ENVIRONMENT_NAME, ...jwt, ...remoto, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
             fs.writeFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), JSON.stringify(vars), { mode: 0o600 });
             fs.appendFileSync(env.GITHUB_OUTPUT, `ecr_image_uri=${imagem}\neks_cluster_name=${cluster}\n`);
           }
-          module.exports = { validarRegistry, clusterDoState, main };
+          module.exports = { validarRegistry, clusterDoState, validarFilaOs, main };
           if (require.main === module) {
             try { main(); } catch { console.error('Preparação do ambiente falhou; contratos, permissões e state devem ser conferidos. Nenhum valor sensível foi registrado.'); process.exit(1); }
           }
@@ -441,6 +460,7 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           JWT_ISSUER: ${{ vars.JWT_ISSUER }}
           JWT_AUDIENCE: ${{ vars.JWT_AUDIENCE }}
+          PROCESSAMENTO_REMOTO_HABILITADO: ${{ vars.PROCESSAMENTO_REMOTO_HABILITADO || 'false' }}
           AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
         run: node "$RUNNER_TEMP/preparar-ambiente-execucao.cjs"
       - name: "🛡️ Bloquear destroy com mensagens ou outbox pendentes"
