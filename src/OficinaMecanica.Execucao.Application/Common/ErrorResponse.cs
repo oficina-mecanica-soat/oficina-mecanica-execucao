@@ -1,0 +1,16 @@
+using System.Text.Json.Serialization;
+
+namespace OficinaMecanica.Execucao.Application.Common;
+
+public enum TipoErro
+{
+    Validacao = 1,
+    NaoEncontrado = 2,
+    RegraNegocio = 3,
+    NaoAutorizado = 4,
+    ErroInterno = 5,
+    AcessoProibido = 6,
+    Conflito = 7
+}
+
+public sealed record ErrorResponse(string Mensagem, TipoErro Tipo, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyCollection<string>? Erros = null);

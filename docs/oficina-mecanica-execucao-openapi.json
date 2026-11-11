@@ -1,0 +1,613 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Oficina Mecânica — Execução",
+    "version": "1.0.0",
+    "description": "Contrato local de ações manuais alinhado à RFC-0007. Administrador/Mecanico; JWT conforme configuração do host. Gateway, JWT compartilhado e workload AWS ainda não integrados. Nenhuma rota HTTP autoriza orçamento. As ações retornam 202 após commit local e consulta por Location."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5094",
+      "description": "Ambiente local Development com ProcessamentoLocal habilitado."
+    }
+  ],
+  "security": [
+    {
+      "BearerJwt": []
+    }
+  ],
+  "paths": {
+    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}": {
+      "get": {
+        "operationId": "ObterExecucao",
+        "summary": "Consultar estado local de uma preparação/execução",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ordemServicoId"
+          },
+          {
+            "$ref": "#/components/parameters/preparacaoId"
+          }
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Erro400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Erro401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Erro403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Erro404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Erro409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Erro422"
+          },
+          "500": {
+            "$ref": "#/components/responses/Erro500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Erro503"
+          },
+          "200": {
+            "description": "Estado local, inclusive pendente de autorização ou cancelado; não é recibo da OS.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsultaExecucao"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/servicos/{servicoId}/iniciar-execucao": {
+      "post": {
+        "operationId": "IniciarExecucaoServico",
+        "summary": "Iniciar manualmente um serviço",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ordemServicoId"
+          },
+          {
+            "$ref": "#/components/parameters/preparacaoId"
+          },
+          {
+            "$ref": "#/components/parameters/servicoId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucao"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Erro400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Erro401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Erro403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Erro404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Erro409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Erro422"
+          },
+          "500": {
+            "$ref": "#/components/responses/Erro500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Erro503"
+          },
+          "202": {
+            "$ref": "#/components/responses/OperacaoAceita"
+          }
+        }
+      }
+    },
+    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/servicos/{servicoId}/finalizar": {
+      "post": {
+        "operationId": "FinalizarServico",
+        "summary": "Finalizar somente um serviço",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ordemServicoId"
+          },
+          {
+            "$ref": "#/components/parameters/preparacaoId"
+          },
+          {
+            "$ref": "#/components/parameters/servicoId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucao"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Erro400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Erro401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Erro403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Erro404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Erro409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Erro422"
+          },
+          "500": {
+            "$ref": "#/components/responses/Erro500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Erro503"
+          },
+          "202": {
+            "$ref": "#/components/responses/OperacaoAceita"
+          }
+        }
+      }
+    },
+    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/finalizar": {
+      "post": {
+        "operationId": "FinalizarExecucao",
+        "summary": "Finalizar explicitamente a execução com baixa atômica",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ordemServicoId"
+          },
+          {
+            "$ref": "#/components/parameters/preparacaoId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucao"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Erro400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Erro401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Erro403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Erro404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Erro409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Erro422"
+          },
+          "500": {
+            "$ref": "#/components/responses/Erro500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Erro503"
+          },
+          "202": {
+            "$ref": "#/components/responses/OperacaoAceita"
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "Health",
+        "summary": "Saúde HTTP; não comprova banco, filas ou IAM",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Healthy",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "example": "Healthy"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerJwt": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT do emissor/audience configurados, com role Administrador ou Mecanico; não inserir segredos neste documento."
+      }
+    },
+    "schemas": {
+      "Servico": {
+        "type": "object",
+        "required": [
+          "id",
+          "servicoCatalogoId",
+          "valor",
+          "status",
+          "dataInicio",
+          "dataFim"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "servicoId da instância na OS, preservado pelo Execução."
+          },
+          "servicoCatalogoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "valor": {
+            "type": "number",
+            "description": "Decimal em BRL; valor do snapshot, sem cálculo em float."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "Pendente",
+              "EmExecucao",
+              "Finalizado"
+            ]
+          },
+          "dataInicio": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "UTC; nulo enquanto a etapa não ocorreu."
+          },
+          "dataFim": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "UTC; nulo enquanto a etapa não ocorreu."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CicloExecucao": {
+        "type": "object",
+        "required": [
+          "servicos",
+          "finalizadaEm"
+        ],
+        "properties": {
+          "servicos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Servico"
+            }
+          },
+          "finalizadaEm": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "UTC; nulo enquanto a etapa não ocorreu."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConsultaExecucao": {
+        "type": "object",
+        "required": [
+          "ordemServicoId",
+          "preparacaoId",
+          "versaoPreparacao",
+          "versaoOrcamento",
+          "reservada",
+          "cancelada",
+          "execucao"
+        ],
+        "properties": {
+          "ordemServicoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "preparacaoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "versaoPreparacao": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "versaoOrcamento": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true
+          },
+          "reservada": {
+            "type": "boolean",
+            "description": "Confirmação histórica da reserva; não é o saldo reservado atual."
+          },
+          "cancelada": {
+            "type": "boolean"
+          },
+          "execucao": {
+            "type": "object",
+            "required": [
+              "servicos",
+              "finalizadaEm"
+            ],
+            "properties": {
+              "servicos": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Servico"
+                }
+              },
+              "finalizadaEm": {
+                "type": "string",
+                "format": "date-time",
+                "nullable": true,
+                "description": "UTC; nulo enquanto a etapa não ocorreu."
+              }
+            },
+            "additionalProperties": false,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResultadoExecucao": {
+        "type": "object",
+        "required": [
+          "preparacaoId",
+          "versaoOrcamento",
+          "execucao"
+        ],
+        "properties": {
+          "preparacaoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "versaoOrcamento": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "execucao": {
+            "$ref": "#/components/schemas/CicloExecucao"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AcaoExecucao": {
+        "type": "object",
+        "required": [
+          "operacaoId"
+        ],
+        "properties": {
+          "operacaoId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID não vazio e estável na repetição da mesma ação."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperacaoAceita": {
+        "type": "object",
+        "required": [
+          "operacaoId",
+          "resultado"
+        ],
+        "properties": {
+          "operacaoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resultado": {
+            "$ref": "#/components/schemas/ResultadoExecucao"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Erro": {
+        "type": "object",
+        "required": [
+          "mensagem",
+          "tipo"
+        ],
+        "properties": {
+          "mensagem": {
+            "type": "string"
+          },
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "Validacao",
+              "NaoEncontrado",
+              "RegraNegocio",
+              "NaoAutorizado",
+              "ErroInterno",
+              "AcessoProibido",
+              "Conflito"
+            ]
+          },
+          "erros": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "Erro400": {
+        "description": "Corpo ou identificadores inválidos.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro401": {
+        "description": "JWT ausente ou inválido.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro403": {
+        "description": "Perfil sem acesso.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro404": {
+        "description": "Preparação não encontrada para a OS.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro409": {
+        "description": "Operação reutilizada ou conflito de persistência.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro422": {
+        "description": "Regra de negócio impede a ação.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro500": {
+        "description": "Falha técnica; detalhes sensíveis não são expostos.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "Erro503": {
+        "description": "Processamento indisponível no host atual; sem fallback local em produção.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Erro"
+            }
+          }
+        }
+      },
+      "OperacaoAceita": {
+        "description": "Transação local confirmada. Não afirma processamento na OS, pagamento ou entrega.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OperacaoAceita"
+            }
+          }
+        },
+        "headers": {
+          "Location": {
+            "description": "GET do estado local da preparação/execução.",
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "ordemServicoId": {
+        "name": "ordemServicoId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "preparacaoId": {
+        "name": "preparacaoId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "servicoId": {
+        "name": "servicoId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  }
+}
