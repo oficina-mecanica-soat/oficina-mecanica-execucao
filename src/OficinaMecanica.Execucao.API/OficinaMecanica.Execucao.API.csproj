@@ -3,5 +3,6 @@
     <ProjectReference Include="../OficinaMecanica.Execucao.Application/OficinaMecanica.Execucao.Application.csproj" />
     <ProjectReference Include="../OficinaMecanica.Execucao.Infrastructure/OficinaMecanica.Execucao.Infrastructure.csproj" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.7" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
   </ItemGroup>
 </Project>

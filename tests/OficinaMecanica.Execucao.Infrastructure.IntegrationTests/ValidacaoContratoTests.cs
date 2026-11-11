@@ -53,6 +53,8 @@ public sealed class ValidacaoContratoTests(DynamoDbFixture fixture) : IClassFixt
     [InlineData("repetido")]
     [InlineData("servicoNulo")]
     [InlineData("servicoVazio")]
+    [InlineData("catalogoVazio")]
+    [InlineData("servicoRepetido")]
     [InlineData("descricao")]
     [InlineData("valor")]
     [InlineData("limite")]
@@ -73,9 +75,11 @@ public sealed class ValidacaoContratoTests(DynamoDbFixture fixture) : IClassFixt
             "quantidade" => dados with { Itens = [new(cenario.ItemId, 0)] },
             "repetido" => dados with { Itens = [new(cenario.ItemId, 1), new(cenario.ItemId, 1)] },
             "servicoNulo" => dados with { Servicos = [null!] },
-            "servicoVazio" => dados with { Servicos = [new(Guid.Empty, "Troca", 1m)] },
-            "descricao" => dados with { Servicos = [new(Guid.NewGuid(), "", 1m)] },
-            "valor" => dados with { Servicos = [new(Guid.NewGuid(), "Troca", 0m)] },
+            "servicoVazio" => dados with { Servicos = [new(Guid.Empty, "Troca", 1m, Guid.NewGuid())] },
+            "catalogoVazio" => dados with { Servicos = [dados.Servicos[0] with { ServicoCatalogoId = Guid.Empty }] },
+            "servicoRepetido" => dados with { Servicos = [dados.Servicos[0], dados.Servicos[0]] },
+            "descricao" => dados with { Servicos = [new(Guid.NewGuid(), "", 1m, Guid.NewGuid())] },
+            "valor" => dados with { Servicos = [new(Guid.NewGuid(), "Troca", 0m, Guid.NewGuid())] },
             _ => dados with { Itens = Enumerable.Range(0, 94).Select(_ => new ItemSolicitado(Guid.NewGuid(), 1)).ToArray() }
         };
 

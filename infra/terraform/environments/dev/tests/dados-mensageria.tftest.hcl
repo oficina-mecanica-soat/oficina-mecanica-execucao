@@ -94,3 +94,16 @@ run "ambiente_parametriza_nomes_e_contratos" {
   }
 }
 
+
+run "observabilidade_segue_referencia_api" {
+  command = plan
+  assert {
+    condition = (
+      kubernetes_deployment_v1.execucao.spec[0].template[0].metadata[0].labels["tags.datadoghq.com/service"] == "oficina-mecanica-execucao"
+      && kubernetes_deployment_v1.execucao.spec[0].template[0].metadata[0].annotations["admission.datadoghq.com/dotnet-lib.version"] == "3.50.0"
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "DD_VERSION"]) == "sha-0000000000000000000000000000000000000000"
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "DD_HTTP_SERVER_TAG_QUERY_STRING"]) == "false"
+    )
+    error_message = "Manter serviço/versão, tracer da API e proteção de query string."
+  }
+}

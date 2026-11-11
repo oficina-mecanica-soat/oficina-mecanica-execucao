@@ -1,5 +1,11 @@
 locals {
-  labels = { app = "oficina-mecanica-execucao" }
+  labels  = { app = "oficina-mecanica-execucao" }
+  version = regex("sha-[0-9a-f]{40}$", var.image_uri)
+  datadog_labels = {
+    "tags.datadoghq.com/env"     = var.environment
+    "tags.datadoghq.com/service" = "oficina-mecanica-execucao"
+    "tags.datadoghq.com/version" = local.version
+  }
 }
 
 resource "kubernetes_namespace_v1" "execucao" {
@@ -30,7 +36,11 @@ resource "kubernetes_deployment_v1" "execucao" {
     }
     template {
       metadata {
-        labels = local.labels
+        labels = merge(local.labels, local.datadog_labels, { "admission.datadoghq.com/enabled" = "true" })
+        annotations = {
+          "ad.datadoghq.com/execucao.logs"             = jsonencode([{ source = "csharp", service = "oficina-mecanica-execucao" }])
+          "admission.datadoghq.com/dotnet-lib.version" = "3.50.0"
+        }
       }
       spec {
         container {
@@ -42,6 +52,34 @@ resource "kubernetes_deployment_v1" "execucao" {
           env {
             name  = "ASPNETCORE_URLS"
             value = "http://+:8080"
+          }
+          env {
+            name  = "DD_ENV"
+            value = var.environment
+          }
+          env {
+            name  = "DD_SERVICE"
+            value = "oficina-mecanica-execucao"
+          }
+          env {
+            name  = "DD_VERSION"
+            value = local.version
+          }
+          env {
+            name  = "DD_LOGS_INJECTION"
+            value = "true"
+          }
+          env {
+            name  = "DD_TRACE_PROPAGATION_STYLE_INJECT"
+            value = "tracecontext"
+          }
+          env {
+            name  = "DD_TRACE_PROPAGATION_STYLE_EXTRACT"
+            value = "tracecontext"
+          }
+          env {
+            name  = "DD_HTTP_SERVER_TAG_QUERY_STRING"
+            value = "false"
           }
           env {
             name  = "Jwt__Issuer"

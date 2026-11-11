@@ -1,11 +1,20 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.AspNetCore.Mvc;
+using OficinaMecanica.Execucao.API.Extensions.Responses;
+using OficinaMecanica.Execucao.API.Extensions.Configuration;
+using OficinaMecanica.Execucao.API.Filters;
+using OficinaMecanica.Execucao.API.Middlewares;
+using OficinaMecanica.Execucao.API.Responses;
+using OficinaMecanica.Execucao.Application.Common;
 using OficinaMecanica.Execucao.Application;
 using OficinaMecanica.Execucao.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddApiObservability();
 
 builder.Services.AddOptions<JwtOptions>()
     .BindConfiguration("Jwt")
@@ -17,6 +26,14 @@ builder.Services.AddOptions<JwtOptions>()
     .ValidateOnStart();
 
 builder.Services.AddHealthChecks();
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    options.JsonSerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+});
+builder.Services.Configure<ApiBehaviorOptions>(options => options.InvalidModelStateResponseFactory = _ =>
+    new BadRequestObjectResult(new ErrorResponse(ApiResponseMessages.RequisicaoInvalida, TipoErro.Validacao)));
+builder.Services.AddScoped<DisponibilidadeProcessamentoFilter>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer();
 builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
@@ -38,15 +55,33 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
             NameClaimType = "sub",
             ClockSkew = TimeSpan.FromSeconds(30)
         };
+        options.Events = new JwtBearerEvents
+        {
+            OnChallenge = context =>
+            {
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.Headers.WWWAuthenticate = "Bearer";
+                return context.Response.WriteApiErrorResponseAsJsonAsync(new ErrorResponse(ApiResponseMessages.NaoAutorizado, TipoErro.NaoAutorizado));
+            },
+            OnForbidden = context =>
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return context.Response.WriteApiErrorResponseAsJsonAsync(new ErrorResponse(ApiResponseMessages.AcessoProibido, TipoErro.AcessoProibido));
+            }
+        };
     });
 builder.Services.AddAuthorization();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseMiddleware<GlobalExceptionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapHealthChecks("/api/health").AllowAnonymous();
+app.MapControllers();
 app.Run();
 
 public partial class Program;

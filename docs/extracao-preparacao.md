@@ -13,6 +13,7 @@ Fontes: ADR-0024/25/26 e RFC-0007, incluindo o ajuste de versão aprovado no [PR
 | `AbrirOrdemServicoValidator` | Peças repetidas e quantidades inválidas são rejeitadas; solicitação sem peças é válida. |
 | `AbrirOrdemServicoUseCase` | Verificar todos os saldos antes de reservar. Sem saldo/item não há reserva parcial. |
 | `CancelarOrdemServicoUseCase` | Falha de estoque impede confirmar a compensação. |
+| `GestaoOrdemServico/Entities/Servico.cs`, `Enums/StatusServico.cs`, quatro mensagens e dez cenários de teste da API | Entidade extraída sem mudança de comportamento: catálogo obrigatório, valor positivo, início somente pendente, finalização somente em execução, datas UTC e estados 1/2/3 preservados. Ainda não conectada aos casos de uso/persistência do serviço extraído. |
 | `OrdemServico.IniciarDiagnostico` | Não existe geração automática de laudo. O resultado desta preparação transporta o snapshot recebido de veículo, mecânico e serviços em `diagnostico`, sem inventar avaliação clínica/técnica. |
 
 ## Organização das camadas
@@ -70,3 +71,41 @@ Os testes de integração criam DynamoDB Local temporário via Testcontainers, e
 Evidência local da reorganização em 10/11/2026: restore/build Release e formato aprovados, zero avisos/erros; **147 testes aprovados, zero ignorados**, sendo 59 de domínio (incluindo os 21 testes extraídos de `Estoque`), 12 unitários de Application, 11 da base API e 65 de integração. Cobertura local consolidada por classe/linha: **96,62%** (629/651); o relatório consolidado do CI é a evidência do gate antes do merge. A demonstração histórica via Compose passou após a reorganização, comprovando estoque 10→7/3→10/0 e dois reinícios reais da API. Os dados de demonstração ficaram fora do Git; containers e rede foram encerrados ao final.
 
 Este incremento conclui o fluxo local de preparação/cancelamento, não a F4-05 inteira. Autorizar execução, início/finalização física, métricas Datadog, consumidor/publicador SQS, tabelas/filas/SSM reais, integração da Saga e políticas HTTP permanecem nas tarefas seguintes. O worker por arquivos é opt-in e recusa ambiente diferente de Development. O workload AWS atual continua sem consumidor remoto habilitado. Nenhum apply/deploy foi executado, nem a AWS foi religada.
+
+## Extração posterior de Servico — sem ativação do ciclo físico
+
+Origem conferida na API, commit `bf58a5a9c2654c209910ce14e44b720a32e9e711`: `src/OficinaMecanica.Domain/GestaoOrdemServico/Entities/Servico.cs`, `Enums/StatusServico.cs`, as quatro constantes usadas de `Messages/OrdemServicoErrorMessages.cs` e `tests/OficinaMecanica.Domain.UnitTests/GestaoOrdemServico/Entities/ServicoTests.cs`. O Execução preserva a mesma organização funcional dentro de Domain/testes. Foram ajustados somente namespaces e helpers de testes para não depender de OS; o agregado inteiro não foi copiado.
+
+Os dez cenários preservam criação válida/inválida, início de serviço pendente, recusa de novo início em serviço em execução/finalizado, finalização de serviço em execução e recusa em serviço pendente/finalizado. Não comprovam autorização por orçamento, persistência, baixa ou idempotência do ciclo físico; essas integrações ainda precisam de implementação.
+
+Gabriel confirmou a preservação do início manual do modelo DDD: autorização apenas libera o trabalho; o início físico ocorre na ação do mecânico. O esclarecimento do contrato está em PR próprio da RFC antes de integrar os handlers. O código atual separa aprovação, início/finalização de cada serviço e finalização da OS. Esta extração não implementa esses handlers nem altera eventos. Nenhuma esteira, estrutura auxiliar, rota, contrato SSM ou recurso AWS é alterado. A validação local passou em 190 testes, zero ignorados, com cobertura consolidada de 96,70%, build sem avisos e formato verificado.
+
+## Ciclo persistido posterior — F4-05
+
+A implementação posterior conecta `Servico` e as regras de finalização/baixa de `OrdemServico.Finalizar` e `FinalizarOrdemServicoUseCase` à unidade de trabalho DynamoDB. `Execucao` é o agregado físico local; não contém estado da Saga, cliente, cobrança ou banco da OS. Preserva IDs de serviço/catálogo do snapshot; não copia EF/migrations ou o agregado de OS.
+
+O documento `PREPARACAO#{versao}` passa a armazenar opcionalmente autorização (versão de orçamento, envelope de origem e hash) e serviços com IDs, valor, status e datas UTC, mais a data final explícita da execução. Reservas têm o marcador opcional `Baixada=false` para leitura do formato anterior. Não são criadas novas chaves ou índices. Snapshot antigo sem catálogo não é autorizado por suposição; requer reconciliação coordenada, sem descarte automático.
+
+A autorização usa o estado persistido como marcador de negócio e grava o recebimento na mesma transação; não cria evento fictício. Ações manuais usam `OperacaoId` para detectar reutilização com outra ação/payload; estado por OS/preparação/serviço impede repetir transição, datas ou evento mesmo com outro ID. Recebimentos usam a chave existente `MENSAGEM#{id}`. Estado, recebimento e evento real são atômicos; o evento entra na mesma sequência/outbox já implementada. Cancelamento e início comparam a revisão da mesma preparação.
+
+A baixa usa o estoque da filial e as reservas exatas daquela OS/versão. Reserva ausente, liberada, baixada ou divergente bloqueia o commit inteiro. Somente após todos os serviços finalizados, a ação explícita confirma baixa/estado/outbox. Após início físico não há compensação fictícia. Fim da execução não confirma pagamento nem entrega. O limite de 46 itens continua dentro das 100 ações, sem dividir a baixa em commits parciais.
+
+Este incremento registra casos de uso internos na DI e aceita `AutorizarExecucao` no processador de comandos. Nenhuma ação manual é um novo comando SQS. Rotas/políticas HTTP, produtor OS com os dois IDs e corte no Gateway ainda precisam da integração coordenada; testes internos não significam que o mecânico já pode usar novas rotas em produção. Identidade IAM, workload remoto e ingestão Datadog permanecem pendentes; AWS continua bloqueada.
+
+## Entrada HTTP posterior — F4-05 local
+
+Reaproveita `OrdensServicoController` para sufixos das ações e perfis Administrador/Mecanico; extrai `PerfisAcesso`, `ErrorResponse`/`TipoErro`, mensagens e serialização/mapeamento de erros da API. O middleware foi adaptado às exceções existentes do Execução, sem dependências EF/SQL ou detalhes sensíveis de SDK. `ObterExecucaoUseCase` projeta estado por OS/preparação sem expor autorização/hash e sem mutar negócio. Consulta cancelamentos/histórico sem exigir autorização de execução.
+
+O controller conecta as mesmas ações manuais já persistidas e só responde 202/Location após commit, sem adicionar comando SQS ou autorização por orçamento via HTTP. O body é somente OperacaoId; IDs de domínio são da rota. Consulta retorna estado local, não confirma entrega de evento à OS. O filtro de recurso verifica modo local/Development depois da autorização e antes da resolução das dependências do caso de uso. Sem composição configurada, retorna 503 sem fallback local. Emissor JWT e edge não foram alterados.
+
+Os novos testes exercitam HTTP/JWT real no TestServer e DynamoDB Local: ciclo completo por Administrador/Mecanico, consulta pendente/cancelada/histórica, repetição, baixa, IDs/corpos inválidos, 401/403 e bloqueio antes da persistência, 404, 409, 422 e falha técnica sanitizada. O worker de arquivos é removido somente do host de teste HTTP para isolar transporte; criação da tabela e persistência são reais no container. O pacote Testcontainers e o pin SSH.NET são os mesmos da referência de infraestrutura. Suíte completa: 245 testes, nenhum ignorado, cobertura local consolidada 97,04%, build/formato aprovados.
+
+OpenAPI/collection locais ficam diretamente em docs, sem pastas auxiliares. Não foram modificados Gateway, Terraform, manifests ou workflows. Validar integração de emissor/audience/chave, produtor OS e corte público com Geovanna; não declarar F4-09/F4-10 concluídas pelo HTTP local. AWS permanece bloqueada.
+
+## Observabilidade posterior — F4-11
+
+Reaproveita a configuração Serilog, JSON, tags de serviço e política de correlação funcional da API conforme ADR-0021/RFC-0006. Adaptadores nativos Datadog ficam na Infrastructure/API; Application define somente a porta de observabilidade. Domain permanece independente. O contexto opcional aprovado na RFC-0007 é filtrado antes da persistência e do envio, contendo apenas `traceparent` válido. Não altera chaves, hash de negócio, saldo, regras físicas ou semântica de repetição.
+
+O contexto capturado acompanha o evento na transação da outbox. Reentrega com outro trace não substitui resultado já confirmado; reinício/falha depois do envio preservam contexto e IDs. O HTTP preserva cabeçalho válido como metadado mesmo sem profiler; isso não produz spans Datadog fictícios. Os testes cobrem filtragem, ausência/invalidade, isolamento entre escopos, HTTP até outbox, reinício/repetição e sanitização de logs reais do host.
+
+A configuração futura do Pod segue a referência API, com biblioteca 3.50.0, tags/versão da imagem, logs do container `execucao`, propagação W3C e query desabilitada. Não altera recursos AWS, IAM/SSM, pipelines ou ativação remota. A instrumentação nativa e ingestão APM reais exigem profiler injetado e Agent acessível; permanecem sem prova local e dependem de laboratório autorizado.
