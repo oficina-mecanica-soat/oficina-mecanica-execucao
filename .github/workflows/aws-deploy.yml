@@ -120,10 +120,20 @@ jobs:
             if (!Array.isArray(resources)) throw new Error(`Resposta inválida: ${label}`);
             if (resources.some(projectResource)) throw new Error(`${label}: há recursos do projeto; bootstrap sem state bloqueado.`);
           }
+          function consultarAws(args, executar = cp.execFileSync) {
+            const texto = executar('aws', [...args, '--region', process.env.AWS_REGION || 'us-east-1', '--output', 'json'], {encoding:'utf8',stdio:['ignore','pipe','pipe']});
+            const listarFilas = args[0] === 'sqs' && args[1] === 'list-queues';
+            // Sem filas, a CLI retorna sucesso com stdout vazio; erro de processo continua lançando.
+            if (listarFilas && !texto.trim()) return { QueueUrls: [] };
+            const resultado = JSON.parse(texto);
+            if (listarFilas && (!resultado || typeof resultado !== 'object' || Array.isArray(resultado)))
+              throw new Error('Resposta SQS inválida; bootstrap bloqueado.');
+            return resultado;
+          }
           function main() {
             const dir = process.env.TF_WORKING_DIRECTORY;
             const stateFile = path.join(dir, 'terraform.tfstate');
-            const aws = (...args) => JSON.parse(cp.execFileSync('aws', [...args, '--region', process.env.AWS_REGION || 'us-east-1', '--output', 'json'], {encoding:'utf8',stdio:['ignore','pipe','pipe']}));
+            const aws = (...args) => consultarAws(args);
             const account = aws('sts','get-caller-identity').Account;
             if (fs.existsSync(stateFile)) {
               const state = JSON.parse(fs.readFileSync(stateFile,'utf8'));
@@ -165,7 +175,7 @@ jobs:
             if (!Array.isArray(parameters) || parameters.length) throw new Error('SSM: contratos existentes ou resposta inválida; bootstrap bloqueado.');
             console.log(`Bootstrap autorizado somente para destroy: conta ${account} sem recursos do projeto. Caches históricos de outras contas preservados e fora da restauração.`);
           }
-          module.exports={checkEmpty,projectResource};
+          module.exports={checkEmpty,projectResource,consultarAws};
           if(require.main===module) {try{main();}catch(error){console.error(error.message);process.exit(1);}}
           VALIDACAO_INLINE_0
           cat > "$RUNNER_TEMP/preparar-ambiente-execucao.cjs" <<'VALIDACAO_INLINE_1'

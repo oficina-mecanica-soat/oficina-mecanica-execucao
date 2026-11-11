@@ -390,13 +390,24 @@ jobs:
           cat > "$RUNNER_TEMP/bootstrap-account-state.test.cjs" <<'TESTE_INLINE_0'
           const {test}=require('node:test');
           const assert=require('node:assert/strict');
-          const {checkEmpty}=require('./bootstrap-account-state.cjs');
+          const {checkEmpty,consultarAws}=require('./bootstrap-account-state.cjs');
           test('bootstrap rejeita recursos do projeto e respostas inválidas',()=>{
             assert.throws(()=>checkEmpty('VPC',[{Tags:[{Key:'Project',Value:'OficinaMecanica'}]}]),/bloqueado/);
             assert.throws(()=>checkEmpty('Lambda',[{FunctionName:'oficina-mecanica-auth-lambda-dev'}]),/bloqueado/);
             assert.throws(()=>checkEmpty('EKS',null),/inválida/);
             checkEmpty('Lambda',[{FunctionName:'MainMonitoringFunction'}]);
             checkEmpty('VPC',[{IsDefault:true}]);
+          });
+          test('SQS sem filas aceita stdout vazio somente depois de sucesso da CLI',()=>{
+            assert.deepEqual(consultarAws(['sqs','list-queues'],()=>''),{QueueUrls:[]});
+            assert.deepEqual(consultarAws(['sqs','list-queues'],()=>'{"QueueUrls":[]}'),{QueueUrls:[]});
+            assert.throws(()=>consultarAws(['sqs','list-queues'],()=>{throw new Error('AccessDenied');}),/AccessDenied/);
+            assert.throws(()=>consultarAws(['sqs','list-queues'],()=>{throw new Error('ExpiredToken');}),/ExpiredToken/);
+            assert.throws(()=>consultarAws(['eks','list-clusters'],()=>''),SyntaxError);
+            for(const texto of ['{','null','[]','"invalid"'])
+              assert.throws(()=>consultarAws(['sqs','list-queues'],()=>texto));
+            const filas=consultarAws(['sqs','list-queues'],()=>'{"QueueUrls":["https://sqs.us-east-1.amazonaws.com/123456789012/oficina-mecanica-execucao-development.fifo"]}');
+            assert.throws(()=>checkEmpty('SQS',filas.QueueUrls),/bloqueado/);
           });
           TESTE_INLINE_0
           cat > "$RUNNER_TEMP/contratos-execucao.test.cjs" <<'TESTE_INLINE_1'
