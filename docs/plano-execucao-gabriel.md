@@ -213,3 +213,9 @@ O host atual não chama o componente, e o filtro HTTP continua com a barreira lo
 Execução #23 integrado em develop, conferido em 11/11/2026. O host passa a selecionar composição remota apenas com configuração completa, conta/região/URLs verificadas e identidade acadêmica confirmada pelo STS. Mantém os clientes vivos até o encerramento, reutiliza worker/adaptadores e impede local/remoto simultâneos. O filtro HTTP permite remoto somente depois dessa composição; não altera ações/perfis/contratos. A RFC recebe atualização documental correspondente sobre o estado do host.
 
 Configuração padrão continua sem remoto e sem chamadas AWS. Manifests, Terraform e pipelines não fornecem nem habilitam os novos parâmetros de runtime neste incremento. O próximo PR de implantação deverá resolver os contratos SSM existentes e fornecer configuração de forma explícita, com autorização separada para prova no Pod. STS não comprova permissões de banco/filas; não declarar F4-04 ou integração real concluídas. Merges por Gabriel, AWS bloqueada.
+
+## Atualização — parâmetros do runtime pela esteira
+
+Execução #24/API #350 mesclados, conferidos em 11/11/2026. O próximo ajuste limita-se ao próprio Execução: preparation do plano lê/valida os contratos existentes da entrada de OS apenas quando o controle remoto é explicitamente ligado; Terraform conecta recursos próprios, conta/região e destino à configuração do host. Padrão desligado e deploy bloqueado preservados.
+
+Mantém os mesmos jobs, environments, imagem validada, plano salvo, state, promoções e teardown. Testes operacionais continuam nos YAMLs, sem pastas de scripts. Destroy não ganha dependência externa de OS. Não altera plataforma compartilhada, IAM, IMDS, Gateway ou frentes da Geovanna. A futura janela deverá ter infraestrutura de OS publicada antes da ativação remota e comprovar acesso dentro do Pod; merge não implanta nem conclui F4-04. O README detalha controles, bootstrap e validações.

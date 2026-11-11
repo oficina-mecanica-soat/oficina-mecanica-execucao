@@ -6,6 +6,16 @@ locals {
     "tags.datadoghq.com/service" = "oficina-mecanica-execucao"
     "tags.datadoghq.com/version" = local.version
   }
+  processamento_env = merge({
+    ProcessamentoRemoto__Habilitado = tostring(var.processamento_remoto_habilitado)
+    ProcessamentoLocal__Habilitado  = "false"
+    }, var.processamento_remoto_habilitado ? {
+    ProcessamentoRemoto__ContaEsperada       = data.aws_caller_identity.current.account_id
+    ProcessamentoRemoto__Regiao              = split(":", aws_sqs_queue.entrada.arn)[3]
+    ProcessamentoRemoto__Tabela              = aws_dynamodb_table.execucao.name
+    ProcessamentoRemoto__FilaEntradaUrl      = aws_sqs_queue.entrada.url
+    ProcessamentoRemoto__FilaResultadosOsUrl = var.os_entrada_queue_url
+  } : {})
 }
 
 resource "kubernetes_namespace_v1" "execucao" {
@@ -52,6 +62,13 @@ resource "kubernetes_deployment_v1" "execucao" {
           env {
             name  = "ASPNETCORE_URLS"
             value = "http://+:8080"
+          }
+          dynamic "env" {
+            for_each = local.processamento_env
+            content {
+              name  = env.key
+              value = env.value
+            }
           }
           env {
             name  = "DD_ENV"
@@ -127,6 +144,13 @@ resource "kubernetes_deployment_v1" "execucao" {
   timeouts {
     create = "10m"
     update = "10m"
+  }
+  lifecycle {
+    precondition {
+      condition = (!var.processamento_remoto_habilitado || var.os_entrada_queue_url ==
+      "https://sqs.${split(":", aws_sqs_queue.entrada.arn)[3]}.amazonaws.com/${data.aws_caller_identity.current.account_id}/oficina-mecanica-api-${var.environment}.fifo")
+      error_message = "O modo remoto exige a entrada FIFO de OS do ambiente, conta e região do workload."
+    }
   }
 }
 
