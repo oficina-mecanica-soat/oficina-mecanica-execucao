@@ -267,3 +267,19 @@ No futuro apply autorizado, o Deployment existente receberá tags `env/service/v
 Antes do corte integrado, produtores/consumidores precisam aceitar o campo opcional aprovado na RFC; deserializadores estritos antigos exigem atualização coordenada. Injeção real, conectividade com Agent, correlação de spans/logs, consumo de memória, métricas, painéis e alertas continuam pendentes da janela autorizada e das demais frentes. `AWS_DEPLOY_ENABLED=false` permanece preservado. Avisar Gabriel antes de precisar do laboratório; nenhum deploy/apply/destroy faz parte desta entrega.
 
 Validação deste incremento: restore/build Release sem avisos, 259 testes aprovados e nenhum ignorado, cobertura local consolidada por classe/linha de 96,66% (1244/1287). Formato .NET, gate de estrutura dos dois repositórios e cinco testes Terraform com providers simulados aprovados. O CI do PR é a evidência final do gate de cobertura. Os testes locais não executaram profiler/Agent Datadog nem AWS.
+
+## Integração local das entradas — preparação da F4-10
+
+Os cenários BDD de `ExecucoesHttpTests` passam pelos adaptadores `ConsumidorSqs`/`TransporteSqs`, HTTP/JWT do mecânico e DynamoDB Local na mesma jornada. Reaproveitam o host e a fixture existentes; `Moq` 4.20.72 segue a versão dos demais projetos de teste. Não há implementação alternativa de Saga, contrato compartilhado ou novo runtime.
+
+| Cenário | Evidência esperada |
+| --- | --- |
+| Preparar/autorizar por SQS, iniciar/finalizar por HTTP e recriar host | Autorização não inicia serviços; repetição preserva datas; baixa única; outbox retomada publica preparação/início/fim com IDs FIFO e correlação preservados. |
+| Cancelar com falha de ACK depois do commit e recriar host | Estado/saldo já confirmados antes do ACK; reentrega do mesmo envelope ou com novo mensagemId não libera duas vezes nem duplica resultado; início posterior bloqueado. |
+| Preparar sem saldo e repetir após recriar host | Sem reserva parcial; um resultado de recusa; autorização ausente e saldo inalterado. |
+
+Os testes recriam a aplicação e seus serviços, mantendo a mesma tabela no container; não simulam reinício do DynamoDB nem durabilidade AWS. O cliente SQS é simulado: inspeciona chamadas, corpos e metadados, sem reproduzir o broker FIFO/DLQ. Os comandos são dados de teste conforme RFC-0007; OS, Orçamento/Pagamento, Mercado Pago, Gateway e emissor JWT real não participam. Não constitui prova ponta a ponta dos três serviços nem conclusão da F4-10.
+
+Nenhum código de produção, recurso, contrato, manifesto ou workflow muda neste incremento. Os testes entram no job existente e preservam o gate de 90%. AWS permanece bloqueada; identidade IAM, ativação remota e validações reais aguardam alinhamento/janela autorizada.
+
+Validação local deste incremento (11/11/2026): restore/build Release sem avisos/erros, formato verificado, 262 testes aprovados e nenhum ignorado; cobertura consolidada de 96,81% (1246/1287). Gate de estrutura aprovado, sem arquivos ou diretórios adicionados. O CI do PR confirma a evidência final do gate.
