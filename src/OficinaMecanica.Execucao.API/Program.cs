@@ -73,7 +73,7 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
     });
 builder.Services.AddAuthorization();
 builder.Services.AddApplication();
-builder.Services.AddInfrastructure(builder.Configuration);
+using var clientesAws = await builder.AddApiProcessingAsync();
 
 var app = builder.Build();
 app.UseMiddleware<CorrelationIdMiddleware>();
@@ -82,7 +82,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapHealthChecks("/api/health").AllowAnonymous();
 app.MapControllers();
-app.Run();
+await app.RunAsync();
 
 public partial class Program;
 
