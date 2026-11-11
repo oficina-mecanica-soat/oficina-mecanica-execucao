@@ -1,3 +1,15 @@
+variable "processamento_remoto_habilitado" {
+  type        = bool
+  default     = false
+  description = "Ativação explícita do runtime acadêmico; exige janela autorizada e contrato da entrada de OS."
+}
+
+variable "os_entrada_queue_url" {
+  type        = string
+  default     = ""
+  description = "Contrato SSM existente api/entrada_queue_url, validado pela esteira com ARN real."
+}
+
 variable "kubeconfig_path" {
   type        = string
   description = "Kubeconfig temporário gerado pela esteira para o EKS compartilhado."

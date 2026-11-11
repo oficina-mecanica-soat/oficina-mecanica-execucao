@@ -201,3 +201,21 @@ Próximas dependências mantidas: definir e validar a identidade do workload con
 Execução #17 integrado até main, conferido em 11/11/2026. O levantamento offline seguinte não encontrou identidade AWS de aplicação configurada na plataforma; as roles existentes documentadas são as de cluster/nodes. O README registra chamadas reais dos adaptadores, permissões e recursos necessários, separação da identidade do runner e critérios de validação. Não assume permissões da LabRole nem introduz IRSA/Pod Identity, nova role, service account ou contrato.
 
 A preparação offline termina com essa matriz. O próximo passo para resolver a identidade é uma janela autorizada de laboratório para verificar capacidades/permissões e alinhar o mecanismo viável com Gabriel; depois, registrar a decisão arquitetural e preparar os PRs de plataforma/host necessários. Não ativar o remoto ou fazer deploy usando uma identidade não comprovada. Código local e esteiras permanecem como estão, AWS bloqueada e merges por Gabriel.
+
+## Atualização — clientes da identidade acadêmica, sem ativação
+
+API #347 mesclado em 11/11/2026: exceção acadêmica de identidade dos nodes (`LabRole`) aprovada para Execução. O incremento seguinte prepara `ClientesAwsAcademicos` e validação STS da conta/role antes de disponibilizar clientes DynamoDB/SQS, reutilizando a composição remota existente. Usa somente credenciais do instance profile escolhido; sem environment/perfil por fallback, cópia de secrets ou alteração de IAM.
+
+O host atual não chama o componente, e o filtro HTTP continua com a barreira local. A composição explícita no Program/configuração, disponibilidade remota e vida útil/descarte dos clientes precisam do próximo incremento antes da janela de prova real. Não altera componentes, contratos SSM, manifests ou esteiras, não ativa AWS e não conclui F4-04. Testes locais simulam STS; não são prova de identidade/metadados/permissões dentro do Pod. Gabriel realiza o merge e autoriza separadamente a implantação.
+
+## Atualização — seleção explícita no host
+
+Execução #23 integrado em develop, conferido em 11/11/2026. O host passa a selecionar composição remota apenas com configuração completa, conta/região/URLs verificadas e identidade acadêmica confirmada pelo STS. Mantém os clientes vivos até o encerramento, reutiliza worker/adaptadores e impede local/remoto simultâneos. O filtro HTTP permite remoto somente depois dessa composição; não altera ações/perfis/contratos. A RFC recebe atualização documental correspondente sobre o estado do host.
+
+Configuração padrão continua sem remoto e sem chamadas AWS. Manifests, Terraform e pipelines não fornecem nem habilitam os novos parâmetros de runtime neste incremento. O próximo PR de implantação deverá resolver os contratos SSM existentes e fornecer configuração de forma explícita, com autorização separada para prova no Pod. STS não comprova permissões de banco/filas; não declarar F4-04 ou integração real concluídas. Merges por Gabriel, AWS bloqueada.
+
+## Atualização — parâmetros do runtime pela esteira
+
+Execução #24/API #350 mesclados, conferidos em 11/11/2026. O próximo ajuste limita-se ao próprio Execução: preparation do plano lê/valida os contratos existentes da entrada de OS apenas quando o controle remoto é explicitamente ligado; Terraform conecta recursos próprios, conta/região e destino à configuração do host. Padrão desligado e deploy bloqueado preservados.
+
+Mantém os mesmos jobs, environments, imagem validada, plano salvo, state, promoções e teardown. Testes operacionais continuam nos YAMLs, sem pastas de scripts. Destroy não ganha dependência externa de OS. Não altera plataforma compartilhada, IAM, IMDS, Gateway ou frentes da Geovanna. A futura janela deverá ter infraestrutura de OS publicada antes da ativação remota e comprovar acesso dentro do Pod; merge não implanta nem conclui F4-04. O README detalha controles, bootstrap e validações.
