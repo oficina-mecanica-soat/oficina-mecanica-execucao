@@ -390,13 +390,24 @@ jobs:
           cat > "$RUNNER_TEMP/bootstrap-account-state.test.cjs" <<'TESTE_INLINE_0'
           const {test}=require('node:test');
           const assert=require('node:assert/strict');
-          const {checkEmpty}=require('./bootstrap-account-state.cjs');
+          const {checkEmpty,consultarAws}=require('./bootstrap-account-state.cjs');
           test('bootstrap rejeita recursos do projeto e respostas inválidas',()=>{
             assert.throws(()=>checkEmpty('VPC',[{Tags:[{Key:'Project',Value:'OficinaMecanica'}]}]),/bloqueado/);
             assert.throws(()=>checkEmpty('Lambda',[{FunctionName:'oficina-mecanica-auth-lambda-dev'}]),/bloqueado/);
             assert.throws(()=>checkEmpty('EKS',null),/inválida/);
             checkEmpty('Lambda',[{FunctionName:'MainMonitoringFunction'}]);
             checkEmpty('VPC',[{IsDefault:true}]);
+          });
+          test('SQS sem filas aceita stdout vazio somente depois de sucesso da CLI',()=>{
+            assert.deepEqual(consultarAws(['sqs','list-queues'],()=>''),{QueueUrls:[]});
+            assert.deepEqual(consultarAws(['sqs','list-queues'],()=>'{"QueueUrls":[]}'),{QueueUrls:[]});
+            assert.throws(()=>consultarAws(['sqs','list-queues'],()=>{throw new Error('AccessDenied');}),/AccessDenied/);
+            assert.throws(()=>consultarAws(['sqs','list-queues'],()=>{throw new Error('ExpiredToken');}),/ExpiredToken/);
+            assert.throws(()=>consultarAws(['eks','list-clusters'],()=>''),SyntaxError);
+            for(const texto of ['{','null','[]','"invalid"'])
+              assert.throws(()=>consultarAws(['sqs','list-queues'],()=>texto));
+            const filas=consultarAws(['sqs','list-queues'],()=>'{"QueueUrls":["https://sqs.us-east-1.amazonaws.com/123456789012/oficina-mecanica-execucao-development.fifo"]}');
+            assert.throws(()=>checkEmpty('SQS',filas.QueueUrls),/bloqueado/);
           });
           TESTE_INLINE_0
           cat > "$RUNNER_TEMP/contratos-execucao.test.cjs" <<'TESTE_INLINE_1'
@@ -457,6 +468,8 @@ jobs:
               assert.equal(vars.cluster_name, 'cluster-documentado');
               assert.equal(vars.image_uri, `${url}:sha-${env.GITHUB_SHA}`);
               assert.equal(vars.jwt_secret, env.JWT_SECRET);
+              assert.equal(vars.processamento_remoto_habilitado, false);
+              assert.equal(vars.os_entrada_queue_url, '');
               assert.equal(pedidos.length, 5);
               assert.ok(!fs.readFileSync(env.GITHUB_OUTPUT, 'utf8').includes(env.JWT_SECRET));
               assert.throws(() => main({ env, consultarAws: () => { throw new Error('AccessDenied'); } }));
@@ -475,11 +488,50 @@ jobs:
             const dir = fs.mkdtempSync(prefix);
             try {
               fs.writeFileSync(path.join(dir, 'terraform.tfstate'), JSON.stringify({ resources: [{ mode: 'data', type: 'aws_eks_cluster', instances: [{ attributes: { name: 'cluster-no-state' } }] }] }));
-              const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'destroy', SSM_ENVIRONMENT_NAME: 'development', TF_VAR_kubeconfig_path: 'local' };
+              const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'destroy', SSM_ENVIRONMENT_NAME: 'development', TF_VAR_kubeconfig_path: 'local', PROCESSAMENTO_REMOTO_HABILITADO: 'true' };
               main({ env, consultarAws: () => { throw new Error('Destroy não deve consultar contratos de plataforma'); } });
               const vars = JSON.parse(fs.readFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), 'utf8'));
               assert.equal(vars.cluster_name, 'cluster-no-state');
               assert.match(vars.image_uri, /^destroy-only:sha-0{40}$/);
+              assert.equal(vars.processamento_remoto_habilitado, false);
+              assert.equal(vars.os_entrada_queue_url, '');
+            } finally {
+              assert.ok(path.resolve(dir).startsWith(path.resolve(prefix)));
+              fs.rmSync(dir, { recursive: true });
+            }
+          });
+          test('ativação remota valida contrato e fila real de OS antes de gerar tfvars', () => {
+            const { main, validarFilaOs } = require('./preparar-ambiente-execucao.cjs');
+            const fs = require('node:fs');
+            const os = require('node:os');
+            const path = require('node:path');
+            const prefix = path.join(os.tmpdir(), 'execucao-remoto-');
+            const dir = fs.mkdtempSync(prefix);
+            const conta = '123456789012';
+            const fila = `https://sqs.us-east-1.amazonaws.com/${conta}/oficina-mecanica-api-development.fifo`;
+            const arn = `arn:aws:sqs:us-east-1:${conta}:oficina-mecanica-api-development.fifo`;
+            const ecr = `${conta}.dkr.ecr.us-east-1.amazonaws.com/oficina-mecanica-execucao`;
+            const env = { TF_WORKING_DIRECTORY: dir, GITHUB_OUTPUT: path.join(dir, 'outputs'), TERRAFORM_ACTION: 'apply', JWT_SECRET: 'a'.repeat(32), JWT_ISSUER: 'emissor', JWT_AUDIENCE: 'audiencia', AWS_REGION: 'us-east-1', AWS_ACCOUNT_ID: conta, SSM_ENVIRONMENT_NAME: 'development', GITHUB_SHA: 'b'.repeat(40), TF_VAR_kubeconfig_path: 'kubeconfig-local', PROCESSAMENTO_REMOTO_HABILITADO: 'true' };
+            const contratos = { 'status/kubernetes': 'ready', 'kubernetes/cluster_name': 'cluster-teste', 'kubernetes/execucao_ecr_repository_name': 'oficina-mecanica-execucao', 'kubernetes/execucao_ecr_repository_url': ecr, 'status/api': 'ready', 'api/entrada_queue_url': fila, 'api/entrada_queue_arn': arn };
+            const consultar = (...args) => {
+              if (args[0] === 'ecr') return ecr;
+              if (args[0] === 'sqs') { assert.ok(args.includes(fila)); return arn; }
+              const nome = args[args.indexOf('--name') + 1].replace('/oficina-mecanica/development/', '');
+              assert.ok(nome in contratos);
+              return contratos[nome];
+            };
+            try {
+              main({ env, consultarAws: consultar });
+              const vars = JSON.parse(fs.readFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), 'utf8'));
+              assert.equal(vars.processamento_remoto_habilitado, true);
+              assert.equal(vars.os_entrada_queue_url, fila);
+              assert.throws(() => validarFilaOs(fila.replace(conta, '999999999999'), arn, conta, 'us-east-1', 'development'));
+              assert.throws(() => validarFilaOs(fila, arn.replace('api-', 'execucao-'), conta, 'us-east-1', 'development'));
+              assert.throws(() => validarFilaOs(fila, arn, conta, 'us-west-2', 'development'));
+              assert.throws(() => main({ env: { ...env, PROCESSAMENTO_REMOTO_HABILITADO: 'invalido' }, consultarAws: () => assert.fail('Não deve consultar AWS') }), /Controle/);
+              assert.throws(() => main({ env, consultarAws: (...args) => args[0] === 'sqs' ? 'arn-divergente' : consultar(...args) }), /Fila real/);
+              assert.throws(() => main({ env, consultarAws: (...args) => args.includes('/oficina-mecanica/development/status/api') ? 'pending' : consultar(...args) }), /ready/);
+              assert.throws(() => main({ env, consultarAws: (...args) => { if (args[0] === 'sqs') throw new Error('AccessDenied'); return consultar(...args); } }), /AccessDenied/);
             } finally {
               assert.ok(path.resolve(dir).startsWith(path.resolve(prefix)));
               fs.rmSync(dir, { recursive: true });

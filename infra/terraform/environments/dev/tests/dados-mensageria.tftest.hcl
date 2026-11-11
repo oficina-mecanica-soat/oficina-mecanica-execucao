@@ -1,5 +1,8 @@
 mock_provider "aws" {
   override_during = plan
+  mock_data "aws_caller_identity" {
+    defaults = { account_id = "123456789012" }
+  }
   mock_resource "aws_dynamodb_table" {
     defaults = {
       arn = "arn:aws:dynamodb:us-east-1:123456789012:table/oficina-mecanica-execucao-development"
@@ -106,4 +109,48 @@ run "observabilidade_segue_referencia_api" {
     )
     error_message = "Manter serviço/versão, tracer da API e proteção de query string."
   }
+}
+
+run "runtime_remoto_permanece_desabilitado_por_padrao" {
+  command = plan
+  assert {
+    condition = (one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__Habilitado"]) == "false"
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoLocal__Habilitado"]) == "false"
+    && !anytrue([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : contains(["ProcessamentoRemoto__ContaEsperada", "ProcessamentoRemoto__FilaResultadosOsUrl", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"], env.name)]))
+    error_message = "Sem ativação explícita, não habilitar runtime ou transportar credenciais do runner."
+  }
+}
+
+run "runtime_remoto_recebe_recursos_proprios_e_destino_os" {
+  command = plan
+  variables {
+    processamento_remoto_habilitado = true
+    os_entrada_queue_url            = "https://sqs.us-east-1.amazonaws.com/123456789012/oficina-mecanica-api-development.fifo"
+  }
+  assert {
+    condition = (one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__Habilitado"]) == "true"
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__ContaEsperada"]) == "123456789012"
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__Regiao"]) == "us-east-1"
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__Tabela"]) == aws_dynamodb_table.execucao.name
+      && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__FilaEntradaUrl"]) == aws_sqs_queue.entrada.url
+    && one([for env in kubernetes_deployment_v1.execucao.spec[0].template[0].spec[0].container[0].env : env.value if env.name == "ProcessamentoRemoto__FilaResultadosOsUrl"]) == var.os_entrada_queue_url)
+    error_message = "Usar valores dos recursos próprios e somente o destino aprovado de OS."
+  }
+}
+
+run "runtime_remoto_bloqueia_destino_de_outra_conta" {
+  command = plan
+  variables {
+    processamento_remoto_habilitado = true
+    os_entrada_queue_url            = "https://sqs.us-east-1.amazonaws.com/999999999999/oficina-mecanica-api-development.fifo"
+  }
+  expect_failures = [kubernetes_deployment_v1.execucao]
+}
+
+run "runtime_remoto_bloqueia_destino_ausente" {
+  command = plan
+  variables {
+    processamento_remoto_habilitado = true
+  }
+  expect_failures = [kubernetes_deployment_v1.execucao]
 }

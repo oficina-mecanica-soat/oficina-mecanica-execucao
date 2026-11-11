@@ -7,7 +7,7 @@ namespace OficinaMecanica.Execucao.Infrastructure.Hosting;
 
 public sealed record ProcessamentoRemotoOptions(string Tabela, string FilaEntradaUrl, string FilaResultadosOsUrl)
 {
-    internal void Validar()
+    public void Validar()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Tabela);
         ContratoFilaSqs.ValidarUrl(FilaEntradaUrl);
