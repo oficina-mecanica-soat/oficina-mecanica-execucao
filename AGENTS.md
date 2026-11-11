@@ -16,3 +16,10 @@
 - Validações operacionais e seus testes ficam nos próprios workflows; arquivos temporários gerados durante a execução ficam somente no diretório temporário do runner, fora do conteúdo versionado.
 - A existência de pastas de scripts em outro repositório não autoriza copiá-las. Preservar as proteções e os testes ao ajustar a organização.
 - Conferir o gate de estrutura antes de enviar qualquer PR, inclusive documental. Não enfraquecer esse gate para publicar pastas não alinhadas.
+
+## Aplicação do fluxo de trabalho
+
+- Antes de editar, identificar a raiz do repositório, ler estas regras e o procedimento canônico da skill. Se a sessão começou em um diretório externo, não presumir que uma mudança de diretório em ferramenta carregou as instruções automaticamente.
+- O procedimento canônico fica em `oficina-mecanica-api/.agents/skills/oficina-mecanica/SKILL.md`; no Execução, a skill local apenas encaminha para essa fonte. Não manter cópias divergentes do procedimento nem instalar configuração local sem tarefa explícita para isso.
+- Antes de publicar qualquer PR, revisar o diff e os caminhos adicionados, executar o gate de estrutura do CI e informar validações realmente observadas. Preservar o gate; não adaptar o bloqueio para permitir uma estrutura não alinhada.
+- Com ajustes autorizados prontos, abrir o PR e informar comportamento, reaproveitamento, contratos, implantação prevista, testes e pendências. Gabriel realiza o merge. Aprovação de código não autoriza apply/deploy/destroy: manter AWS bloqueada até janela explicitamente autorizada.

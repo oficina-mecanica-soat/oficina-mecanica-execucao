@@ -1,24 +1,14 @@
 ---
 name: oficina-mecanica
-description: Orienta alterações no projeto Oficina Mecânica que envolvam arquitetura, contratos, aplicação ou infraestrutura entre repositórios.
+description: Aplica o fluxo de implementação, revisão e preparação de PRs do Oficina Mecânica ao serviço Execução, consultando a skill canônica da API. Use em tarefas deste repositório e em suas integrações com os demais serviços.
 ---
 
-# Oficina Mecânica
+# Encaminhamento para o fluxo canônico
 
-Use as instruções do repositório ativo e consulte os documentos canônicos da API em `docs/architecture/adrs`, `docs/architecture/rfcs` e `docs/projeto/backlog-tecnico.md`. Em outro clone, localize o repositório `oficina-mecanica-api` ao lado; se indisponível, informe a limitação e não invente contratos.
+Antes de implementar ou revisar um PR, ler o `AGENTS.md` deste repositório e o procedimento completo em `../oficina-mecanica-api/.agents/skills/oficina-mecanica/SKILL.md`, considerando o caminho a partir da raiz do Execução. Este arquivo não mantém uma segunda versão do procedimento.
 
-Antes de implementar, identifique o comportamento existente, produtores e consumidores, regras de domínio, testes e referência equivalente. Respeite decisões aceitas; proponha ADR sucessora para mudança arquitetural e RFC quando contratos ou coordenação exigirem detalhamento. Registre dúvidas em vez de presumir decisões não aprovadas.
+Se o clone irmão não estiver disponível, consultar a [skill da API na branch develop](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/.agents/skills/oficina-mecanica/SKILL.md), confirmando que a referência é a adequada à tarefa. Não continuar com uma cópia antiga presumida; informar e perguntar se a fonte necessária não puder ser lida.
 
-Na evolução para serviços independentes, cada serviço é dono dos próprios dados; não acesse diretamente o banco de outro serviço. DynamoDB e SQS são escolhas acordadas; SNS somente quando houver necessidade. Defina contratos, idempotência, falhas e compensações antes de implementar a Saga. Confirme permissões do laboratório antes de depender de provisionamento real.
+Aplicar o procedimento canônico junto das regras locais. O README do Execução continua sendo a fonte do funcionamento deste componente; ADRs/RFCs e backlog da API mantêm as decisões compartilhadas. Não instalar outra skill, criar agente, pasta auxiliar ou alterar configuração local para fazer esse encaminhamento.
 
-Siga o padrão real de CI/CD da API, VPC e Kubernetes, comparando workflows, gates, Git Flow, promoções, environments, permissões e guardrails. Preserve os contratos SSM e o papel do Datadog. Não dispare deploy, apply ou destroy sem autorização específica.
-
-Use português brasileiro claro e acentuado em textos, mensagens, logs e PRs; conceitos do domínio em português e termos técnicos consolidados em inglês, seguindo identificadores existentes sem acentos. Aplique SOLID, Clean Code, KISS e DRY sem criar complexidade desnecessária. Verifique testes e evidências reais; preserve trabalho alheio e não exponha segredos.
-
-## Estrutura obrigatória em todos os PRs
-
-- Não versionar pastas `scripts/`, `.github/scripts` ou equivalentes em outros níveis. Não mover os mesmos arquivos para outra pasta para contornar essa regra.
-- Manter a estrutura existente; não acrescentar diretórios de topo ou novas estruturas auxiliares sem alinhamento explícito. Novas funcionalidades devem seguir as camadas e convenções já aprovadas dentro de `src`, `tests`, `infra` e `docs`.
-- Validações operacionais e seus testes ficam nos próprios workflows; arquivos temporários gerados durante a execução ficam somente no diretório temporário do runner, fora do conteúdo versionado.
-- A existência de pastas de scripts em outro repositório não autoriza copiá-las. Preservar as proteções e os testes ao ajustar a organização.
-- Conferir o gate de estrutura antes de enviar qualquer PR, inclusive documental. Não enfraquecer esse gate para publicar pastas não alinhadas.
+Uma sessão iniciada fora do Git não comprova carregamento automático: localizar a raiz e ler explicitamente as instruções. A aprovação de PR não autoriza AWS ou merge automático.
