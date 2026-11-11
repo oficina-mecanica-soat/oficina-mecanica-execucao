@@ -25,7 +25,7 @@ public sealed class TransporteSqs : ITransporteResultado
         var resposta = await _client.SendMessageAsync(new SendMessageRequest
         {
             QueueUrl = _filaOsUrl,
-            MessageBody = JsonContrato.Serializar(mensagem),
+            MessageBody = JsonContrato.Serializar(mensagem with { TraceContext = ContextoTrace.Filtrar(mensagem.TraceContext) }),
             MessageGroupId = mensagem.OrdemServicoId.ToString("D"),
             MessageDeduplicationId = mensagem.MensagemId.ToString("D")
         }, cancellationToken);

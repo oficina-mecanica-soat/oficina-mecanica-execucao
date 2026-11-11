@@ -151,3 +151,47 @@ Há testes de contrato com cliente SDK simulado, relógio controlado e integraç
 ### Padronização obrigatória de estrutura — 10/11/2026
 
 Por orientação explícita de Gabriel, as pastas de scripts foram removidas da API e do Execução. Lógica operacional e testes são mantidos nos workflows existentes; arquivos temporários são gerados fora do conteúdo versionado. O gate de Git Flow impede pastas de scripts e novos diretórios de topo em todo PR. Não acrescentar estruturas auxiliares sem alinhamento. Esta reorganização não altera recursos de infraestrutura, contratos de mensagens ou regras de negócio; AWS permanece desabilitada.
+
+## Atualização — composição remota sem ativação
+
+Após os PRs de estrutura e fluxo de trabalho, a preparação da F4-04 conecta os componentes existentes em `AddInfrastructureRemota`, com clientes DynamoDB/SQS fornecidos explicitamente pelo host. `ProcessamentoRemotoWorker` mantém consumo e publicação independentes, escopos por tentativa e encerramento cooperativo. O modo remoto não cria tabela nem clientes AWS; não escolhe credencial/role e impede registro simultâneo com o modo local. O README detalha os contratos aprovados de Execução e OS usados como origem das opções.
+
+O host atual permanece no modo anterior: nenhuma variável ativa o remoto, e `Program.cs`, Terraform, manifests e esteiras não mudam neste incremento. A definição e prova da identidade IAM continuam necessárias antes de integrar a ativação no workload. O contrato de resultados da OS já foi aprovado na API #328, mas sua publicação real ainda exige apply autorizado. Não usar credenciais do runner ou role dos nodes por suposição.
+
+Build Release e 180 testes locais passaram sem avisos, erros ou testes ignorados; DynamoDB Local e SQS simulado verificam retomada de outbox durante long polling, falhas de recepção/envio, ACK após persistência e encerramento. Esses testes não comprovam IAM/FIFO/DLQ reais. AWS permanece bloqueada; avisar Gabriel antes de precisar do laboratório. A F4-04/F4-05 ainda inclui ativação/prova remota e as regras de autorização/início/finalização física seguintes.
+
+## Atualização — extração independente de Servico
+
+PR #12 integrado. O incremento seguinte extrai a entidade `Servico`, enum `StatusServico`, quatro mensagens e dez cenários de teste da API, preservando nomes, transições e invariantes. Não altera OS, mensagens ou banco; não conecta ainda a entidade ao runtime/persistência e não conclui a F4-05. A origem e os limites estão em `extracao-preparacao.md`.
+
+A implementação de handlers depende de registrar a passagem entre `AutorizarExecucao`, ações físicas do mecânico e eventos/compensação. Gabriel confirmou a preservação do início manual do modelo DDD; o esclarecimento está em PR próprio da RFC. Este incremento extrai apenas a entidade e seus testes, sem antecipar handlers ou o corte público. A validação local passou em 190 testes, zero ignorados, cobertura consolidada de 96,70%, build sem avisos e formato verificado. AWS permanece desligada.
+
+## Atualização — autorização e ciclo físico persistidos
+
+API #335 e Execução #13 integrados em develop. Gabriel confirmou preservar `servicoId` e incluir `servicoCatalogoId` no snapshot; o ajuste da RFC segue em PR próprio antes do corte coordenado com o produtor OS. O Execução implementa autorização sem evento fictício, casos de uso internos de início/finalização manual e finalização explícita com baixa atômica. Reutiliza entidade e estoque extraídos, unidade de trabalho DynamoDB, deduplicação e outbox.
+
+Cancelamento pode confirmar antes do início físico; após ele, não libera reserva ou anuncia compensação. A disputa compara o mesmo documento/revisão. Os testes locais usam DynamoDB Local, concorrência forçada, falha de commit e verificação de saldo/estado/outbox; não comprovam SQS/IAM reais. Operações manuais ainda não possuem rotas/políticas HTTP, e o corte público fica para integração com OS/Gateway. Não declarar F4-05/F4-10 concluídas sem essas etapas.
+
+Nenhum workflow, recurso Terraform, contrato SSM ou ativação de workload remoto muda. AWS permanece bloqueada, sem consultas/apply/destroy. Merges exclusivamente por Gabriel; avisar antes da janela de laboratório.
+
+## Atualização — HTTP manual local
+
+API #338 e Execução #14 integrados em develop. Gabriel aprovou preservar os sufixos das ações do mecânico sob `/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`, body OperacaoId, 202 após commit/Location e GET do estado. Perfis Administrador/Mecanico preservados da API; contrato em PR próprio da RFC. Este incremento conecta o controller, consulta, erros seguros e testes HTTP/JWT com DynamoDB Local, reutilizando as regras persistidas.
+
+245 testes locais aprovados, zero ignorados, cobertura consolidada 97,04%, build/formato e gate de estrutura devem ser conferidos antes de publicar. OpenAPI/Postman locais descrevem somente Execução. O host atual aceita operações apenas no modo local habilitado em Development; identidade autorizada recebe 503 fora dele, sem resolver persistência por fallback.
+
+Geovanna mantém emissores JWT e Gateway na F4-09, produtor OS na F4-06 e corte coordenado. Não foi ativado acesso remoto nem alterado o edge; testes locais não comprovam login/emissor real, SQS/IAM ou AWS. Pipelines, Terraform e manifests permanecem sem alteração; avisar Gabriel antes da janela e deixar merges exclusivamente com ele.
+
+## Atualização — preparação de observabilidade F4-11
+
+API #341 e Execução #15 integrados em develop. Gabriel aprovou contexto opcional persistido no envelope. O próximo par de PRs registra o contrato na RFC e implementa no Execução: logs JSON/HTTP, correlação funcional, escopos Datadog nativos, contexto filtrado na outbox e configuração futura do Pod. Reutiliza padrões vigentes da API, sem alterar esteiras ou nomes de componentes.
+
+Ordem de revisão/merge: contrato documental da API, depois implementação do Execução. Gabriel realiza ambos. Consumidores estritos precisam aceitar o metadado antes do corte coordenado; esta entrega não muda produtor OS/Gateway ou ativa acesso remoto. A F4-11 permanece parcial: ingestão real, impacto do profiler, métricas/painéis e alertas precisam de evidência e janela autorizada. AWS continua bloqueada; avisar antes de precisar de novo laboratório.
+
+## Atualização — entradas combinadas da F4-10 local
+
+API #344 e Execução #16 foram mesclados, conferidos em 11/11/2026. Este incremento reutiliza a fixture HTTP/DynamoDB Local e os adaptadores SQS existentes para testar a jornada do Execução nas duas entradas juntas: preparação/autorização por comando, início/finalização manual HTTP, persistência/outbox e publicação à OS simulada.
+
+Os cenários cobrem repetição entre recriações do host, baixa única, correlação/metadados de transporte, compensação confirmada antes de falha de ACK e recusa sem saldo. Somente cliente SQS/atores externos são simulados; HTTP/JWT e DynamoDB Local são reais no teste. Não substitui a integração com os três serviços nem comprova FIFO/DLQ, IAM ou ingestão Datadog reais. Não altera contratos, componentes, regras ou esteiras.
+
+Próximas dependências mantidas: definir e validar a identidade do workload conforme capacidade real do laboratório (ADR-0025), ativar composição remota de forma explícita e coordenar integração com as frentes OS/Orçamento/Pagamento/Gateway. O repositório de Orçamento/Pagamento não apareceu na organização na consulta de 11/11/2026; não tratar essa ausência como implementação local pendente de Gabriel. Não criar roles ou presumir permissões da LabRole dos nodes. Avisar Gabriel antes de precisar de AWS; merges continuam exclusivamente com ele.

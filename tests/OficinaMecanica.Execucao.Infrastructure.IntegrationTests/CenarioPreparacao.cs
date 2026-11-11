@@ -33,7 +33,8 @@ internal sealed class CenarioPreparacao : IDisposable
     {
         var unidade = new UnidadeTrabalhoPreparacaoDynamoDb(armazenamento);
         return new(new(unidade, new Application.Preparacoes.PrepararExecucao.PrepararExecucaoValidator(), relogio),
-            new(unidade, new Application.Preparacoes.CancelarPreparacao.CancelarPreparacaoValidator(), relogio));
+            new(unidade, new Application.Preparacoes.CancelarPreparacao.CancelarPreparacaoValidator(), relogio),
+            new(unidade, new Application.Preparacoes.AutorizarExecucao.AutorizarExecucaoValidator()));
     }
 
     public static async Task<CenarioPreparacao> CriarAsync(DynamoDbFixture fixture)
@@ -52,13 +53,14 @@ internal sealed class CenarioPreparacao : IDisposable
     }
 
     public PrepararExecucao Dados(int quantidade = 3, int versao = 1) => new(versao, FilialId, Guid.NewGuid(), Guid.NewGuid(),
-        [new(ItemId, quantidade)], [new(Guid.NewGuid(), "Troca de óleo", 125.50m)]);
+        [new(ItemId, quantidade)], [new(Guid.NewGuid(), "Troca de óleo", 125.50m, Guid.NewGuid())]);
 
     public Mensagem Comando<T>(string tipo, T dados, Guid? osId = null) => new(Guid.NewGuid(), tipo, 1,
         SagaId, osId ?? OsId, Guid.NewGuid().ToString("D"), Guid.NewGuid(), Relogio.GetUtcNow(), JsonSerializer.SerializeToElement(dados, JsonContrato.Options));
 
-    public Task<Mensagem> EnviarAsync(Mensagem mensagem, ProcessadorPreparacao? processador = null)
-        => (processador ?? Processador).ProcessarAsync(JsonContrato.Serializar(mensagem));
+    public async Task<Mensagem> EnviarAsync(Mensagem mensagem, ProcessadorPreparacao? processador = null)
+        => await (processador ?? Processador).ProcessarAsync(JsonContrato.Serializar(mensagem))
+            ?? throw new InvalidOperationException("Este helper exige comando com resultado imediato.");
 
     public async Task<SaldoEstoque?> SaldoAsync(Guid? itemId = null, Guid? filialId = null)
         => (await Armazenamento.ObterAsync(ChavesExecucao.Estoque(filialId ?? FilialId, itemId ?? ItemId), default)).Ler<SaldoEstoque>();

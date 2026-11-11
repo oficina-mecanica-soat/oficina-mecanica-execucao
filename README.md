@@ -2,15 +2,66 @@
 
 Serviço de diagnóstico, estoque físico, reservas e execução da Fase 4. Responsável: Gabriel. A arquitetura é definida pelas ADRs 0024–0026 e pela RFC-0007 do repositório da API.
 
-## Estado desta entrega — preparação e cancelamento da F4-05
+## Estado desta entrega — HTTP local da F4-05
 
 Serviço .NET 10 com Clean Architecture, healthcheck, validação JWT, testes, Dockerfile, manifests Kubernetes, workload Terraform e CI/CD próprios. Domain mantém `Estoque`/`ItemEstoque` e as regras de reserva; Application separa preparação e cancelamento em Request/Response/Validator/UseCase, com portas tipadas. Infrastructure implementa persistência, unidade de trabalho DynamoDB, outbox e processamento local por arquivos; API configura HTTP e a composição das dependências.
 
 `PrepararExecucao` reserva todo o lote ou persiste uma recusa sem reserva parcial. `CancelarPreparacao` libera o saldo uma vez, inclusive após reiniciar o processamento e reentregar com outro `mensagemId`. Estado, saldos, reservas por OS/item, deduplicação e outbox são confirmados na mesma transação, com comparação de revisões técnicas. A versão de negócio segue a RFC-0007 atualizada no [PR #325](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/325).
 
-O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. `AutorizarExecucao`, início/finalização física e integração ponta a ponta com OS/cobrança permanecem pendentes. A configuração Terraform de DynamoDB, SQS FIFO e DLQ da F4-04 está preparada; os recursos reais ainda não foram provisionados nem conectados ao runtime. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS. Os adaptadores SDK SQS estão preparados e testados separadamente, mas ainda não foram registrados na composição do runtime nem habilitados no workload.
+O [mapeamento, modelo de dados e limites do incremento](docs/extracao-preparacao.md) detalha as garantias e evidências. O Domain também contém `Servico`, `StatusServico` e as mensagens/testes extraídos da API, preservando criação, início e finalização individuais. A entidade agora participa do ciclo persistido: autorização, início manual de cada serviço, finalização individual e finalização explícita com baixa. Os casos de uso também estão conectados a rotas HTTP locais para Administrador/Mecanico, com consulta do estado e resposta 202 após commit. Ainda não há corte público no Gateway ou integração ponta a ponta com OS/cobrança. A configuração Terraform de DynamoDB, SQS FIFO e DLQ da F4-04 está preparada; os recursos reais ainda não foram provisionados nem conectados ao runtime. O healthcheck verifica somente a aplicação; não comprova acesso a banco ou filas. O worker por arquivos só pode ser habilitado em Development e não é consumidor SQS. A composição remota dos adaptadores está preparada por chamada explícita, mas não foi ativada pelo host ou workload.
+
+### Extração de Servico — marco anterior da F4-05
+
+Foram reaproveitados `Servico`, `StatusServico` (valores 1/2/3), quatro mensagens de validação e os dez cenários de teste correspondentes da API. Preservam IDs locais, referência ao catálogo, valor positivo, transições Pendente → EmExecucao → Finalizado e datas UTC. As mudanças são de namespace e de isolamento dos testes: os helpers mínimos ficam no próprio teste, sem copiar o agregado/factory de OS. Não há referência entre projetos Domain dos serviços nem consulta ao catálogo/banco da OS.
+
+A RFC-0007 define `AutorizarExecucao` e os eventos de início/finalização, enquanto o fluxo atual distingue aprovação e ações individuais do mecânico. Gabriel confirmou a preservação do início manual; o esclarecimento foi integrado na API #335. O incremento anterior preservou as regras de `Servico` sem handlers ou eventos. A seção abaixo descreve a conexão posterior dessas regras à persistência e outbox. O monólito permanece com seu fluxo público até o corte coordenado com OS/Gateway.
+
+Validação local desta extração: **190 testes aprovados, zero ignorados**, cobertura consolidada por classe/linha de **96,70%**, restore/build Release sem avisos/erros e formato verificado. Comparação com a origem confirmou equivalência de `Servico`/`StatusServico` exceto namespace/formato e preservação dos cenários originais. O CI deve confirmar os mesmos gates antes do merge.
 
 Nenhuma alteração desta entrega implementa a extração no monólito. Catálogo, clientes, veículos e coordenação da Saga continuam no serviço de OS. Não há acesso ao banco de outro serviço nem compartilhamento de Domain/migrations.
+
+## Ciclo persistido de execução
+
+`PrepararExecucao.servicos` passa a exigir `servicoId` (instância na OS) e `servicoCatalogoId` (referência ao catálogo), conforme alinhamento explícito com Gabriel e PR próprio da RFC-0007. Ambos são preservados no resultado de preparação e no estado persistido. Não há geração de outro ID nem consulta ao catálogo da OS. Os produtores da F4-06 precisam enviar o novo campo antes do corte; mensagens antigas sem ele são rejeitadas. Preparações persistidas sem vínculo de catálogo exigem reconciliação, sem preenchimento automático ou migração destrutiva.
+
+`AutorizarExecucao` v1 persiste a autorização e os serviços pendentes junto da deduplicação, sem iniciar reparo ou publicar evento de início. Sua versão de orçamento é independente da versão da preparação; a Saga de OS continua responsável por validar a associação com o orçamento aprovado. Reentrega idêntica não reativa preparação cancelada nem troca orçamento/Saga. Autorização conflitante, preparação recusada, cancelada, sem serviços ou de outra OS não avançam.
+
+`IniciarExecucaoServicoUseCase`, `FinalizarServicoUseCase` e `FinalizarExecucaoUseCase` seguem Request/Validator/UseCase e resposta tipada, reaproveitando `Servico`, `Estoque.BaixarItens`, unidade de trabalho e outbox. São entradas da Application, reutilizadas pelo HTTP local descrito abaixo, sem novos comandos SQS. Recebem `OperacaoId` estável na repetição, OS/preparação e serviço quando aplicável. A entrada HTTP verifica JWT/perfil e exige esse identificador; o corte público e a integração do emissor permanecem pendentes.
+
+O primeiro início manual confirma `ExecucaoIniciada` na mesma transação do estado. Outros serviços não repetem esse evento. Finalizar individualmente não baixa estoque nem conclui a execução. A finalização explícita exige todos os serviços concluídos, valida cada reserva e confirma, numa transação, baixa, marcadores `Baixada`, estado final, deduplicação e `ExecucaoFinalizada` com UTC. Repetição preserva IDs/datas/eventos e não repete a baixa. O agregado físico `Execucao` reúne essas invariantes sem copiar o agregado/Saga de OS.
+
+Cancelamento ainda pode liberar uma preparação autorizada sem início físico. Após o primeiro início, não libera estoque nem emite compensação fictícia. Cancelamento e início comparam a mesma revisão do documento da preparação, impedindo que os dois confirmem. Falha técnica mantém a operação pendente; não se torna decisão de negócio. Uma execução finalizada mantém a barreira contra nova preparação da mesma OS. Eventos conservam OS/Saga/correlação da autorização e usam a operação manual como `causationId`.
+
+`ProcessadorPreparacao` aceita o novo comando de autorização; sua porta interna admite resultado imediato nulo, pois confirmar o comando não equivale a publicar evento. Consumidores local/SQS continuam confirmando somente depois do commit. O modelo físico da tabela, chaves e limite de 46 itens permanecem; autorização/serviços ficam no documento da preparação. Não cria tabela, índice, fila, SSM ou papel IAM.
+
+O host remoto, Terraform, manifests e workflows não são ativados por este ciclo; `Program.cs` agora conecta o HTTP local descrito abaixo. `AWS_DEPLOY_ENABLED=false` permanece. O merge integra código e executa CI; não implanta recursos. Ainda faltam integração de identidade e corte coordenado com OS/Gateway, observabilidade distribuída, identidade IAM e prova real no laboratório. A F4-05/F4-10 não está concluída apenas por esses testes locais.
+
+Validação local do ciclo: **220 testes aprovados, zero ignorados**, cobertura consolidada por classe/linha de **96,92%**, restore/build Release sem avisos/erros e formato verificado. Inclui disputas com commits sincronizados, falha antes do commit, reserva inconsistente, autorização/reentrega sem evento fictício, retomada persistida e saldo após baixa. DynamoDB Local é real; SQS e identidade AWS não foram validados em laboratório. O CI confirma os gates e sua cobertura consolidada.
+
+## HTTP local — ações do mecânico
+
+Contrato alinhado com Gabriel e registrado em PR próprio da RFC-0007. A base é `/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`. Os sufixos e perfis derivam de `OrdensServicoController` da API; não há alteração de suas rotas públicas atuais.
+
+| Método e sufixo | Uso | Resposta de sucesso |
+| --- | --- | --- |
+| GET na base | Consultar estado local, inclusive antes de autorizar ou após cancelar | 200 |
+| POST `/servicos/{servicoId}/iniciar-execucao` | Iniciar manualmente um serviço autorizado | 202 |
+| POST `/servicos/{servicoId}/finalizar` | Finalizar um serviço individual | 202 |
+| POST `/finalizar` | Finalizar explicitamente a execução e confirmar a baixa | 202 |
+
+Todos exigem JWT válido com role `Administrador` ou `Mecanico`, como na referência. Cliente, Atendente e outros perfis recebem 403; token ausente/inválido recebe 401. Não há regra nova de vínculo usuário/mecânico: preserva a autorização por perfil atual. Não foi ampliada a lista de emissores/audiences nem alterada a chave configurada. A Lambda continua emitindo JWT de Cliente; isso não autoriza reparos. Configurar/validar a identidade interna correta permanece na F4-09 com Geovanna.
+
+O corpo dos POSTs contém somente `{ "operacaoId": "UUID" }`. Use um UUID não vazio por ação e preserve-o nas repetições; use IDs distintos para iniciar, finalizar serviço e finalizar execução. Os IDs de domínio vêm da rota. Corpo extra, malformado ou inválido retorna 400. A resposta 202 traz `operacaoId`, `resultado` e `Location` para o GET do recurso, somente após commit local. Não significa que a OS recebeu o evento, que houve pagamento ou que a Saga concluiu. Não foi criada rota HTTP de `AutorizarExecucao`.
+
+O GET projeta preparação, versões, indicadores históricos de reserva/cancelamento e ciclo de serviços; não expõe envelope, hash ou credenciais. `reservada` significa que a reserva foi confirmada historicamente, não o saldo atual. Uma preparação cancelada continua consultável, inclusive após preparar outra versão. Não grava estado de negócio; usa leituras consistentes com condições na unidade de trabalho existente.
+
+Erros seguem `ErrorResponse`/`TipoErro` extraídos da API: 404 para preparação ausente ou de outra OS; 409 para conflito de operação/persistência; 422 para regra de negócio; 500 genérico para falha técnica. Não retorna detalhes sensíveis do SDK. No host atual, autenticação/perfil são conferidos antes da persistência e o processamento deve estar habilitado em Development. Caso contrário, identidade autorizada recebe 503 antes de resolver clientes. Essa barreira evita fallback local em produção; não comprova prontidão real do banco e deverá ser adaptada quando a composição remota for integrada/validada. `/api/health` permanece público.
+
+Artefatos locais: [OpenAPI](docs/oficina-mecanica-execucao-openapi.json) e [collection Postman](docs/oficina-mecanica-execucao.postman_collection.json). Importar a collection, preencher `jwt`, IDs e os três IDs de operação. Nenhuma credencial está embutida e não há script de geração de token. Primeiro preparar/autorizar pela mensageria local; a collection não simula autorização da Saga. O Compose habilita o modo local em Development; fora dele, configure o modo explicitamente conforme Execução local.
+
+Validação: **245 testes aprovados, zero ignorados**, cobertura local consolidada de **97,04%**, build Release sem avisos/erros e formato verificado. Requisições HTTP reais no TestServer com JWT assinado e DynamoDB Local comprovam 202/Location após commit, repetição, baixa, consulta/histórico, erros e 401/403. O transporte por arquivos é isolado nesses testes; seus workers continuam cobertos pela suíte existente. Testcontainers/SSH.NET usam as mesmas versões dos testes de infraestrutura. Não houve validação de login real, emissor compartilhado, Gateway, SQS remoto ou IAM.
+
+Gateway, OpenAPI/Postman públicos da solução e retirada/encaminhamento de rotas antigas continuam no corte integrado F4-09/F4-10. Estes artefatos documentam somente o serviço local, sem apresentar o edge como alterado. Terraform, manifests, pipelines e AWS permanecem preservados/desligados. Merge apenas por Gabriel.
 
 ## Fontes da verdade
 
@@ -35,7 +86,7 @@ curl.exe --fail http://localhost:5094/api/health
 docker compose down
 ```
 
-Resposta esperada: `Healthy`. A porta 5094 evita conflito com a API atual em 5093. O processo recusa inicialização sem issuer, audience e chave válida. O healthcheck é público; endpoints de negócio e suas políticas serão implementados com as regras extraídas, sem inventar rotas de sucesso nesta base.
+Resposta esperada: `Healthy`. A porta 5094 evita conflito com a API atual em 5093. O processo recusa inicialização sem issuer, audience e chave válida. O healthcheck é público e não comprova persistência. As rotas manuais e suas condições de disponibilidade estão descritas na seção HTTP local.
 
 O worker lê envelopes JSON completos em `.local/mensagens/entrada/`. Após commit, arquiva em `processadas/`; resultados da outbox aparecem em `saida/`, com o `causationId` do comando original. Contratos inválidos vão para `investigacao/`, com código sanitizado; falhas técnicas preservam a entrada para repetição. Crie arquivos como `.tmp` e renomeie para `.json` só após terminar a gravação. Diretórios locais e `.env` não são versionados nem enviados à imagem.
 
@@ -123,7 +174,7 @@ Variables do repositório: `AWS_DEPLOY_ENABLED=false`, `AUTO_PR_ENABLED=true`, `
 
 ## Próximo passo
 
-F4-04/F4-05: validar a identidade AWS do workload, conectar o runtime ao DynamoDB/SQS reais e comprovar leitura/escrita/consumo pelas esteiras na janela autorizada; depois implementar autorização/início/finalização física. Atualizar contratos SSM na tarefa de infraestrutura e integrar com OS na F4-10. Observabilidade distribuída e métricas da Saga/DLQ serão evidenciadas na F4-11. O workload atual permanece sem consumidor remoto habilitado; não habilitar deploy para afirmar integração ainda não validada.
+F4-04/F4-05: validar a identidade AWS do workload, conectar o runtime ao DynamoDB/SQS reais e comprovar leitura/escrita/consumo pelas esteiras na janela autorizada. O ciclo persistido e HTTP local já estão preparados; integrar emissor JWT, produtor OS e corte público de forma coordenada. Atualizar contratos SSM na tarefa de infraestrutura e integrar com OS na F4-10. Observabilidade distribuída e métricas da Saga/DLQ serão evidenciadas na F4-11. O workload atual permanece sem consumidor remoto habilitado; não habilitar deploy para afirmar integração ainda não validada.
 
 ## Dados e mensageria — preparação da F4-04
 
@@ -169,13 +220,25 @@ Não há alteração de IAM, nova role, credencial em código ou ativação impl
 
 Durante processamento prolongado, renova a visibilidade a cada 20 s. Falha de renovação cancela o trabalho cooperativamente e impede confirmação. JSON/tipo/versão inválidos, falha de persistência, cancelamento e resposta incerta preservam a entrada; a política SQS encaminhará à DLQ após o limite de recebimentos. Não envia manualmente à DLQ, não faz purge e não presume entrega exatamente uma vez: reentrega continua dependendo da idempotência persistida. Falha de confirmação após commit pode repetir a entrada; falha após envio de resultado repete os mesmos metadados de deduplicação.
 
-Os clientes `IAmazonSQS` são recebidos por injeção nos adaptadores. Eles não criam cliente AWS, não escolhem role, não carregam credenciais e não são registrados no `AddInfrastructure` nesta entrega. `ProcessamentoLocalWorker`, Compose, DI atual e Terraform permanecem sem ativação SQS. Portanto, integrar este código não conecta um Pod à AWS.
+Os clientes `IAmazonSQS` são recebidos por injeção nos adaptadores. Eles não criam cliente AWS, não escolhem role e não carregam credenciais. O `AddInfrastructure` usado pelo host atual continua com o worker local, sem ativação SQS. A composição remota explícita está descrita abaixo; integrar esse código não conecta um Pod à AWS.
 
 O destino de resultados pertence ao serviço de OS conforme RFC-0007. Sua URL deverá vir do contrato publicado pelo owner na integração; não reutilizar a entrada do Execução para resultados nem inventar um parâmetro SSM de OS neste repositório. Os nomes das URLs usadas nos testes são fictícios e exclusivos do cliente simulado.
 
 Validação local: build Release sem avisos, suíte completa anterior com 170 testes aprovada e suíte unitária dos adaptadores com 22 testes aprovada após acrescentar a compatibilidade de UUIDs. O CI executa os 171 testes da solução atual e confirma a cobertura, preservando o gate de 90%. Dois cenários de integração usam DynamoDB Local real e SQS simulado: preparação/reentrega/cancelamento com confirmação somente após persistência, e retomada de outbox com a mesma deduplicação após envio confirmado e falha de gravação. São testes de contrato do adaptador; não comprovam comportamento FIFO/DLQ/IAM ou disponibilidade SQS reais.
 
-Continuam pendentes: identidade IAM validada do workload, composição do runtime remoto/DynamoDB/SQS, contrato da fila de resultados de OS, instrumentação/propagação de trace Datadog da F4-11 e validação real pela esteira. Nenhuma configuração de acesso AWS foi escolhida implicitamente. `AWS_DEPLOY_ENABLED=false` permanece ativo, sem consultas AWS, apply ou destroy. Avisar Gabriel quando a prova exigir novo laboratório.
+Na entrega dos adaptadores, identidade IAM, composição do runtime, contrato da fila de resultados de OS, observabilidade e validação real permaneceram pendentes. O contrato de OS foi posteriormente aprovado no [PR #328 da API](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/328), e a preparação da composição remota é detalhada a seguir. Nenhuma configuração de acesso AWS foi escolhida implicitamente. `AWS_DEPLOY_ENABLED=false` permanece ativo, sem consultas AWS, apply ou destroy. Avisar Gabriel quando a prova exigir novo laboratório.
+
+## Composição remota — preparação sem ativação
+
+`AddInfrastructureRemota(ProcessamentoRemotoOptions, IAmazonDynamoDB, IAmazonSQS)` combina `ArmazenamentoDynamoDb`, unidade de trabalho, `ProcessadorPreparacao`, `ConsumidorSqs`, `TransporteSqs` e `PublicadorOutbox` existentes. O host deve chamar `AddApplication`, prover logging e fornecer os dois clientes SDK já configurados com a identidade validada. O chamador mantém a responsabilidade de descartar esses clientes; a composição não os cria, não busca credenciais nem escolhe role. O registro local e o remoto são mutuamente exclusivos, incluindo registros repetidos.
+
+As opções imutáveis recebem tabela, URL de entrada do Execução e URL de resultados da OS. A futura composição do host/deploy deverá obtê-las dos contratos aprovados, respectivamente `/oficina-mecanica/{ambiente}/execucao/dynamodb_table_name`, `/oficina-mecanica/{ambiente}/execucao/entrada_queue_url` e `/oficina-mecanica/{ambiente}/api/entrada_queue_url`. Não há novo parâmetro SSM. A composição exige tabela preenchida, URLs HTTPS FIFO e destinos distintos; não consulta SSM nem comprova que a URL pertence ao owner correto. Existência, conta, região e ownership precisam ser conferidos pela integração/deploy antes da ativação.
+
+`ProcessamentoRemotoWorker` hospeda consumo e publicação em loops independentes, com escopos próprios por tentativa. O long polling não bloqueia outbox já confirmada. As garantias de transação, idempotência, confirmação após commit, renovação de visibilidade, lease e backoff continuam nos componentes existentes. Falhas preservam entrada/outbox e são registradas sem envelope ou detalhes sensíveis do SDK. O loop aguarda 500 ms quando não há trabalho ou ocorre falha; a repetição de publicação continua respeitando também o backoff persistido. O encerramento cancela ambos os loops e aguarda sua conclusão.
+
+`Program.cs`, Compose, manifests, Terraform e workflows não ativam essa composição neste incremento. Não há variável de ambiente que a habilite, criação de tabela pelo worker remoto ou fallback para modo local. Ainda é necessário definir e comprovar a identidade IAM do workload e integrar a chamada explícita no host junto da configuração aprovada. O healthcheck atual continua verificando somente HTTP, sem comprovar DynamoDB/SQS. Esta preparação não conclui F4-04, F4-05 nem integração da Saga.
+
+Validação local: **180 testes aprovados, zero ignorados**, cobertura consolidada por classe/linha de **96,83%**, build Release sem avisos/erros e formatação verificada. O CI confirma a consolidação pelo ReportGenerator e o gate de 90%. Os novos cenários cobrem ausência de ativação no host atual, bloqueio de composição mista/configuração inválida, retomada de outbox durante poll bloqueado, recuperação de falhas de recepção/envio, saldo persistido antes do ACK e cancelamento dos loops. DynamoDB Local é real; SQS é simulado. Não constituem prova de IAM, FIFO/DLQ ou execução em Pod na AWS.
 
 ## Estrutura obrigatória dos PRs
 
@@ -188,3 +251,35 @@ O job obrigatório de Git Flow verifica essa estrutura em todos os PRs, inclusiv
 O `AGENTS.md` mantém as regras obrigatórias e aponta para o procedimento canônico em `oficina-mecanica-api/.agents/skills/oficina-mecanica/SKILL.md`. A skill do Execução é somente um encaminhamento, evitando duas versões do mesmo fluxo. READMEs e documentos de arquitetura continuam sendo as fontes de decisões e comportamento do projeto.
 
 Ao abrir um novo chat, prefira a raiz do repositório correto. Se o chat foi aberto fora do Git, peça a leitura explícita do `AGENTS.md` e da skill antes de implementar; entrar na pasta por um comando não garante descoberta automática. A verificação deste ajuste confirma os arquivos e os caminhos, sem instalar skill pessoal ou mudar a configuração do Codex. O gate do CI continua sendo o bloqueio verificável de estrutura, complementando as instruções.
+
+## Observabilidade — preparação da F4-11
+
+O Execução segue ADR-0021 e RFCs 0006/0007: Datadog nativo e Serilog, sem SDK/exporter OpenTelemetry. Reaproveita o padrão da API (`Serilog.AspNetCore` 10.0.0, JSON e `X-Correlation-Id`); o SDK manual `Datadog.Trace` 3.50.0 acompanha a versão da injeção já usada pela API. O domínio não depende dessas bibliotecas.
+
+O envelope aceita `traceContext` opcional, contendo exclusivamente `traceparent` W3C versão 00 válido. Cabeçalhos extras, baggage, tracestate, credenciais e valores inválidos não são persistidos nem enviados. Ausência do campo mantém a serialização anterior. Esse metadado não participa do hash/idempotência de negócio: uma repetição mantém a identidade e o contexto do resultado já confirmado.
+
+O processador e o publicador retomam o contexto validado; os resultados o persistem atomicamente na outbox para sobreviver a reinícios. Ações manuais capturam o contexto nativo ativo ou preservam o `traceparent` HTTP validado, com fallback para o contexto de origem. `X-Correlation-Id` continua sendo correlação funcional independente; a resposta HTTP o devolve, preservando valor sem controles de até 128 caracteres ou gerando UUID. Não muda payload, perfil ou regra de início manual.
+
+Logs JSON incluem serviço/ambiente/versão, operação, correlação e duração. HTTP registra o template da rota e remove propriedades de caminho bruto do escopo ASP.NET; não registra query, corpo, Authorization ou detalhes de exceções. `dd.trace_id`/`dd.span_id` só aparecem quando fornecidos pelo tracer real. Sem profiler, os testes comprovam metadados e persistência, não exportação APM; o SDK manual sozinho não instala o profiler. Logs de processamento/publicação representam tentativas e não contadores únicos de negócio.
+
+No futuro apply autorizado, o Deployment existente receberá tags `env/service/version`, habilitação da admissão, anotação do container existente `execucao` e biblioteca .NET 3.50.0. `DD_VERSION` usa o SHA da imagem; injeção/extração usam `tracecontext` e coleta de query HTTP fica desabilitada. O manifesto local descreve a mesma configuração com versão `local`. Não cria Agent, recurso AWS, IAM ou parâmetro SSM. Não altera pipelines nem ativa o consumidor remoto.
+
+Antes do corte integrado, produtores/consumidores precisam aceitar o campo opcional aprovado na RFC; deserializadores estritos antigos exigem atualização coordenada. Injeção real, conectividade com Agent, correlação de spans/logs, consumo de memória, métricas, painéis e alertas continuam pendentes da janela autorizada e das demais frentes. `AWS_DEPLOY_ENABLED=false` permanece preservado. Avisar Gabriel antes de precisar do laboratório; nenhum deploy/apply/destroy faz parte desta entrega.
+
+Validação deste incremento: restore/build Release sem avisos, 259 testes aprovados e nenhum ignorado, cobertura local consolidada por classe/linha de 96,66% (1244/1287). Formato .NET, gate de estrutura dos dois repositórios e cinco testes Terraform com providers simulados aprovados. O CI do PR é a evidência final do gate de cobertura. Os testes locais não executaram profiler/Agent Datadog nem AWS.
+
+## Integração local das entradas — preparação da F4-10
+
+Os cenários BDD de `ExecucoesHttpTests` passam pelos adaptadores `ConsumidorSqs`/`TransporteSqs`, HTTP/JWT do mecânico e DynamoDB Local na mesma jornada. Reaproveitam o host e a fixture existentes; `Moq` 4.20.72 segue a versão dos demais projetos de teste. Não há implementação alternativa de Saga, contrato compartilhado ou novo runtime.
+
+| Cenário | Evidência esperada |
+| --- | --- |
+| Preparar/autorizar por SQS, iniciar/finalizar por HTTP e recriar host | Autorização não inicia serviços; repetição preserva datas; baixa única; outbox retomada publica preparação/início/fim com IDs FIFO e correlação preservados. |
+| Cancelar com falha de ACK depois do commit e recriar host | Estado/saldo já confirmados antes do ACK; reentrega do mesmo envelope ou com novo mensagemId não libera duas vezes nem duplica resultado; início posterior bloqueado. |
+| Preparar sem saldo e repetir após recriar host | Sem reserva parcial; um resultado de recusa; autorização ausente e saldo inalterado. |
+
+Os testes recriam a aplicação e seus serviços, mantendo a mesma tabela no container; não simulam reinício do DynamoDB nem durabilidade AWS. O cliente SQS é simulado: inspeciona chamadas, corpos e metadados, sem reproduzir o broker FIFO/DLQ. Os comandos são dados de teste conforme RFC-0007; OS, Orçamento/Pagamento, Mercado Pago, Gateway e emissor JWT real não participam. Não constitui prova ponta a ponta dos três serviços nem conclusão da F4-10.
+
+Nenhum código de produção, recurso, contrato, manifesto ou workflow muda neste incremento. Os testes entram no job existente e preservam o gate de 90%. AWS permanece bloqueada; identidade IAM, ativação remota e validações reais aguardam alinhamento/janela autorizada.
+
+Validação local deste incremento (11/11/2026): restore/build Release sem avisos/erros, formato verificado, 262 testes aprovados e nenhum ignorado; cobertura consolidada de 96,81% (1246/1287). Gate de estrutura aprovado, sem arquivos ou diretórios adicionados. O CI do PR confirma a evidência final do gate.

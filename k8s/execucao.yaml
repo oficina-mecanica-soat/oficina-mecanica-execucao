@@ -12,6 +12,13 @@ spec:
     metadata:
       labels:
         app: oficina-mecanica-execucao
+        tags.datadoghq.com/env: development
+        tags.datadoghq.com/service: oficina-mecanica-execucao
+        tags.datadoghq.com/version: local
+        admission.datadoghq.com/enabled: "true"
+      annotations:
+        ad.datadoghq.com/execucao.logs: '[{"source":"csharp","service":"oficina-mecanica-execucao"}]'
+        admission.datadoghq.com/dotnet-lib.version: "3.50.0"
     spec:
       containers:
         - name: execucao
@@ -19,6 +26,20 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: DD_ENV
+              value: development
+            - name: DD_SERVICE
+              value: oficina-mecanica-execucao
+            - name: DD_VERSION
+              value: local
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            - name: DD_TRACE_PROPAGATION_STYLE_INJECT
+              value: tracecontext
+            - name: DD_TRACE_PROPAGATION_STYLE_EXTRACT
+              value: tracecontext
+            - name: DD_HTTP_SERVER_TAG_QUERY_STRING
+              value: "false"
             - name: Jwt__Issuer
               value: oficina-mecanica-auth
             - name: Jwt__Audience

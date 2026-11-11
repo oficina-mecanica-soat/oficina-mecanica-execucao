@@ -68,9 +68,7 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
     {
         var operacao = ChavesExecucao.Operacao(mensagem.OrdemServicoId, versao, mensagem.Tipo);
         var recebidaKey = ChavesExecucao.Recebida(mensagem.MensagemId);
-        var recebida = await tx.LerAsync<MensagemRecebida>(recebidaKey, ct);
-        if (recebida is not null && recebida.Hash != hash)
-            throw new ContratoMensagemException("MENSAGEM_ID_REUTILIZADO");
+        await ValidarRecebimentoAsync(mensagem.MensagemId, hash, ct);
         var existente = await tx.LerAsync<OperacaoProcessada>(operacao, ct);
         if (existente is null)
             return null;
@@ -80,12 +78,30 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
         return existente.Resultado;
     }
 
+    public async Task RegistrarRecebimentoAsync(Guid identificador, string hash, CancellationToken ct)
+    {
+        await ValidarRecebimentoAsync(identificador, hash, ct);
+        tx.Salvar(ChavesExecucao.Recebida(identificador), new MensagemRecebida(hash));
+    }
+
+    private async Task ValidarRecebimentoAsync(Guid identificador, string hash, CancellationToken ct)
+    {
+        var recebida = await tx.LerAsync<MensagemRecebida>(ChavesExecucao.Recebida(identificador), ct);
+        if (recebida is not null && recebida.Hash != hash)
+            throw new ContratoMensagemException("MENSAGEM_ID_REUTILIZADO");
+    }
+
     public async Task RegistrarResultadoAsync(Mensagem mensagem, int versao,
         string hash, Mensagem resultado, CancellationToken ct)
     {
         var operacao = ChavesExecucao.Operacao(mensagem.OrdemServicoId, versao, mensagem.Tipo);
         tx.Salvar(ChavesExecucao.Recebida(mensagem.MensagemId), new MensagemRecebida(hash));
         tx.Salvar(operacao, new OperacaoProcessada(hash, resultado));
+        await AdicionarResultadoAsync(resultado, ct);
+    }
+
+    public async Task AdicionarResultadoAsync(Mensagem resultado, CancellationToken ct)
+    {
         var sequencia = await tx.LerAsync<SequenciaOutbox>(ChavesExecucao.SequenciaOutbox, ct);
         var proxima = checked((sequencia?.Valor ?? 0) + 1);
         tx.Salvar(ChavesExecucao.SequenciaOutbox, new SequenciaOutbox(proxima));

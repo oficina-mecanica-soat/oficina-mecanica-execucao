@@ -10,7 +10,7 @@ public sealed class TransporteArquivos(string diretorio) : ITransporteResultado
     {
         Directory.CreateDirectory(diretorio);
         var destino = Path.Combine(diretorio, $"{mensagem.MensagemId:D}.json");
-        var conteudo = JsonContrato.Serializar(mensagem);
+        var conteudo = JsonContrato.Serializar(mensagem with { TraceContext = ContextoTrace.Filtrar(mensagem.TraceContext) });
         if (File.Exists(destino))
         {
             if (await File.ReadAllTextAsync(destino, cancellationToken) != conteudo)

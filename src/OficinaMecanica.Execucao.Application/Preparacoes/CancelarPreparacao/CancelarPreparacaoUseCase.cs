@@ -7,7 +7,7 @@ using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
 namespace OficinaMecanica.Execucao.Application.Preparacoes.CancelarPreparacao;
 
 public sealed class CancelarPreparacaoUseCase(IUnidadeTrabalhoPreparacao unidadeTrabalho,
-    IValidator<CancelarPreparacaoRequest> validator, TimeProvider relogio)
+    IValidator<CancelarPreparacaoRequest> validator, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null)
 {
     public async Task<CancelarPreparacaoResponse> ExecuteAsync(CancelarPreparacaoRequest request, CancellationToken ct = default)
     {
@@ -31,13 +31,15 @@ public sealed class CancelarPreparacaoUseCase(IUnidadeTrabalhoPreparacao unidade
             var atual = await sessao.ObterAtualAsync(mensagem.OrdemServicoId, ct);
             if (estado.PreparacaoId != dados.PreparacaoId || atual?.PreparacaoId != dados.PreparacaoId || estado.Cancelada)
                 throw new ContratoMensagemException("ESTADO_PREPARACAO_INCONSISTENTE");
+            if (estado.Execucao?.Reconstituir().IniciadaEm is not null)
+                throw new ContratoMensagemException("EXECUCAO_FISICA_INICIADA");
 
             if (estado.Reservada)
             {
                 foreach (var item in estado.Snapshot.Itens)
                 {
                     var reserva = await sessao.ObterReservaAsync(mensagem.OrdemServicoId, item.ItemId, referencia.Versao, ct);
-                    if (reserva is null || reserva.PreparacaoId != dados.PreparacaoId || reserva.Liberada
+                    if (reserva is null || reserva.PreparacaoId != dados.PreparacaoId || reserva.Liberada || reserva.Baixada
                         || reserva.Quantidade != item.Quantidade || reserva.FilialId != estado.Snapshot.FilialId)
                         throw new DomainException("Reserva persistida inconsistente; compensação não confirmada.");
                     await sessao.SalvarReservaAsync(mensagem.OrdemServicoId, referencia.Versao, reserva with { Liberada = true }, false, ct);
@@ -50,7 +52,7 @@ public sealed class CancelarPreparacaoUseCase(IUnidadeTrabalhoPreparacao unidade
             }
             await sessao.SalvarPreparacaoAsync(mensagem.OrdemServicoId, referencia.Versao, estado with { Cancelada = true }, ct);
             await sessao.SalvarAtualAsync(mensagem.OrdemServicoId, atual with { Ativa = false }, ct);
-            var resultado = ResultadosPreparacao.Criar(mensagem, "PreparacaoCancelada", new PreparacaoCancelada(dados.PreparacaoId, referencia.Versao), relogio);
+            var resultado = ResultadosPreparacao.Criar(mensagem, "PreparacaoCancelada", new PreparacaoCancelada(dados.PreparacaoId, referencia.Versao), relogio, observabilidade);
             await sessao.RegistrarResultadoAsync(mensagem, referencia.Versao, hash, resultado, ct);
             return new CancelarPreparacaoResponse(resultado);
         }, ct);

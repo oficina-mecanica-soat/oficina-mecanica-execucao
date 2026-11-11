@@ -20,8 +20,9 @@ internal static class ResultadosPreparacao
     public static string Hash<T>(Mensagem mensagem, T dados) => Convert.ToHexString(SHA256.HashData(
         Encoding.UTF8.GetBytes(JsonContrato.Serializar(new { mensagem.Tipo, mensagem.OrdemServicoId, Dados = dados }))));
 
-    public static Mensagem Criar<T>(Mensagem origem, string tipo, T dados, TimeProvider relogio) => new(Guid.CreateVersion7(), tipo, 1,
+    public static Mensagem Criar<T>(Mensagem origem, string tipo, T dados, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null) => new(Guid.CreateVersion7(), tipo, 1,
         origem.SagaId, origem.OrdemServicoId, origem.CorrelationId, origem.MensagemId, relogio.GetUtcNow(),
-        JsonSerializer.SerializeToElement(dados, JsonContrato.Options));
+        JsonSerializer.SerializeToElement(dados, JsonContrato.Options),
+        ContextoTrace.Filtrar(observabilidade?.CapturarContexto()) ?? ContextoTrace.Filtrar(origem.TraceContext));
 }
 

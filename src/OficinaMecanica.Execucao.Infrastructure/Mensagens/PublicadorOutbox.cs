@@ -3,7 +3,7 @@ using OficinaMecanica.Execucao.Infrastructure.Persistencia;
 
 namespace OficinaMecanica.Execucao.Infrastructure.Mensagens;
 
-public sealed class PublicadorOutbox(IArmazenamentoExecucao armazenamento, ITransporteResultado transporte, TimeProvider relogio)
+public sealed class PublicadorOutbox(IArmazenamentoExecucao armazenamento, ITransporteResultado transporte, TimeProvider relogio, IObservabilidadeExecucao? observabilidade = null)
 {
     public async Task<bool> PublicarProximaAsync(CancellationToken ct = default)
     {
@@ -21,35 +21,43 @@ public sealed class PublicadorOutbox(IArmazenamentoExecucao armazenamento, ITran
         }
         catch (ConflitoConcorrenciaException) { return false; }
 
-        // Após o transporte confirmar, falha de persistência deve manter a mesma mensagem
-        // para reenvio após expirar a lease, nunca gerar outro mensagemId.
+        using var escopo = observabilidade?.Iniciar("execucao.publicar", lease.Mensagem);
         try
         {
-            await transporte.PublicarAsync(lease.Mensagem, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception)
-        {
-            var tentativas = lease.Tentativas + 1;
-            var falha = lease with
+            // Após o transporte confirmar, falha de persistência deve manter a mesma mensagem
+            // para reenvio após expirar a lease, nunca gerar outro mensagemId.
+            try
             {
-                Tentativas = tentativas,
-                Responsavel = null,
-                LeaseAte = null,
-                ProximaTentativaEm = relogio.GetUtcNow().AddSeconds(Math.Min(300, Math.Pow(2, Math.Min(tentativas, 8)))),
-                UltimoErro = "FALHA_PUBLICACAO"
-            };
-            await armazenamento.ConfirmarAsync([new(new(registro.Chave, registro.Revisao + 1,
-                JsonContrato.Serializar(lease)), true, JsonContrato.Serializar(falha))], ct);
-            return false;
-        }
+                await transporte.PublicarAsync(lease.Mensagem, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception)
+            {
+                escopo?.Falhar();
+                var tentativas = lease.Tentativas + 1;
+                var falha = lease with
+                {
+                    Tentativas = tentativas,
+                    Responsavel = null,
+                    LeaseAte = null,
+                    ProximaTentativaEm = relogio.GetUtcNow().AddSeconds(Math.Min(300, Math.Pow(2, Math.Min(tentativas, 8)))),
+                    UltimoErro = "FALHA_PUBLICACAO"
+                };
+                await armazenamento.ConfirmarAsync([new(new(registro.Chave, registro.Revisao + 1,
+                    JsonContrato.Serializar(lease)), true, JsonContrato.Serializar(falha))], ct);
+                return false;
+            }
 
-        var enviadaKey = new ChaveRegistro("OUTBOX#ENVIADA", registro.Chave.Ordenacao);
-        var enviada = await armazenamento.ObterAsync(enviadaKey, ct);
-        await armazenamento.ConfirmarAsync([
-            new(new(registro.Chave, registro.Revisao + 1, JsonContrato.Serializar(lease)), true, null),
-            new(enviada, true, JsonContrato.Serializar(lease with { Responsavel = null, LeaseAte = null }))
-        ], ct);
-        return true;
+            var enviadaKey = new ChaveRegistro("OUTBOX#ENVIADA", registro.Chave.Ordenacao);
+            var enviada = await armazenamento.ObterAsync(enviadaKey, ct);
+            await armazenamento.ConfirmarAsync([
+                new(new(registro.Chave, registro.Revisao + 1, JsonContrato.Serializar(lease)), true, null),
+                new(enviada, true, JsonContrato.Serializar(lease with { Responsavel = null, LeaseAte = null }))
+            ], ct);
+            escopo?.Concluir("publicada");
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { escopo?.Concluir("cancelada"); throw; }
+        catch { escopo?.Falhar(); throw; }
     }
 }
