@@ -71,6 +71,46 @@ public sealed class PreparacaoPersistenteTests(DynamoDbFixture fixture) : IClass
     }
 
     [Fact]
+    public async Task Dado_CancelamentoEntreLeituras_Quando_SaldoJaLiberado_Entao_RetomaPelaIdempotencia()
+    {
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        await cenario.SemearAsync();
+        var preparada = await cenario.EnviarAsync(cenario.Comando("PrepararExecucao", cenario.Dados()));
+        var id = preparada.Dados.GetProperty("preparacaoId").GetGuid();
+        var comando = cenario.Comando("CancelarPreparacao", new CancelarPreparacao(id, "Recusa"));
+        Mensagem? vencedora = null;
+        var armazenamento = new IntercalarCancelamento(cenario.Armazenamento,
+            ChavesExecucao.Estoque(cenario.FilialId, cenario.ItemId),
+            async () => vencedora = await cenario.EnviarAsync(comando));
+        var processador = CenarioPreparacao.CriarProcessador(armazenamento, cenario.Relogio);
+
+        var repetida = await cenario.EnviarAsync(comando with { MensagemId = Guid.NewGuid() }, processador);
+
+        Assert.Equal(vencedora!.MensagemId, repetida.MensagemId);
+        Assert.Equal(1, armazenamento.Intercalacoes);
+        Assert.Equal(10, (await cenario.SaldoAsync())!.Disponivel);
+        Assert.Equal(0, (await cenario.SaldoAsync())!.Reservada);
+    }
+
+    private sealed class IntercalarCancelamento(IArmazenamentoExecucao origem, ChaveRegistro chaveSaldo,
+        Func<Task> cancelar) : IArmazenamentoExecucao
+    {
+        public int Intercalacoes { get; private set; }
+        public async Task<Registro> ObterAsync(ChaveRegistro chave, CancellationToken ct)
+        {
+            if (chave == chaveSaldo && Intercalacoes == 0)
+            {
+                Intercalacoes++;
+                await cancelar();
+            }
+            return await origem.ObterAsync(chave, ct);
+        }
+        public Task ConfirmarAsync(IReadOnlyCollection<AlteracaoRegistro> registros, CancellationToken ct)
+            => origem.ConfirmarAsync(registros, ct);
+        public Task<Registro?> ObterPrimeiraOutboxAsync(CancellationToken ct) => origem.ObterPrimeiraOutboxAsync(ct);
+    }
+
+    [Fact]
     public async Task Dado_VersoesSucessivas_Quando_ReentregarCancelamentoAntigo_Entao_PreservaReservaAtualEHistorico()
     {
         using var cenario = await CenarioPreparacao.CriarAsync(fixture);

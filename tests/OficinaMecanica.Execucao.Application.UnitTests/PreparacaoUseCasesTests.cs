@@ -15,6 +15,31 @@ namespace OficinaMecanica.Execucao.Application.UnitTests.Preparacoes;
 
 public sealed class PreparacaoUseCasesTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dado_Inspecao_Quando_ExecutarCasoDeUso_Entao_RegistraOMesmoHash(bool cancelar)
+    {
+        var c = new Cenario();
+        object dados = c.Dados;
+        if (cancelar)
+        {
+            c.PrepararCancelamento();
+            dados = new Application.Mensagens.CancelarPreparacao(c.PreparacaoId, "Recusa");
+        }
+        var mensagem = c.Mensagem with
+        {
+            Tipo = cancelar ? "CancelarPreparacao" : "PrepararExecucao",
+            Dados = JsonSerializer.SerializeToElement(dados, JsonContrato.Options)
+        };
+        var inspecao = await InspecaoMensagemPreparacao.InspecionarAsync(JsonContrato.Serializar(mensagem));
+        if (cancelar)
+            await c.Cancelar.ExecuteAsync(new(mensagem, (Application.Mensagens.CancelarPreparacao)dados));
+        else
+            await c.Preparar.ExecuteAsync(new(mensagem, c.Dados));
+        c.Sessao.Verify(s => s.RegistrarResultadoAsync(mensagem, 1, inspecao.HashNegocio, It.IsAny<Mensagem>(), default), Times.Once);
+    }
+
     [Fact]
     public async Task Dado_SnapshotValido_Quando_Preparar_Entao_ReservaERegistraResultadoNaMesmaUnidade()
     {
