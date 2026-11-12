@@ -1,8 +1,16 @@
 # Plano de execução da Fase 4 — Gabriel e integrações com Geovanna
 
-Revisão inicial em 10/11/2026; situação operacional atualizada em 11/11/2026 na seção seguinte. Este plano detalha a execução do backlog existente e a exigência de uniformidade das esteiras. Não substitui decisões arquiteturais nem declara implementadas as etapas futuras. Merges são realizados por Gabriel; recursos AWS somente pelas esteiras, após aviso para criação do laboratório e atualização dos environments.
+Revisão inicial em 10/11/2026; atualizações operacionais e de validação local em 11–12/11/2026 nas seções seguintes. Este plano detalha a execução do backlog existente e a exigência de uniformidade das esteiras. Não substitui decisões arquiteturais nem declara implementadas as etapas futuras. Merges são realizados por Gabriel; recursos AWS somente pelas esteiras, após aviso para criação do laboratório e atualização dos environments.
 
-## Situação atual e próximos critérios de aceite — 11/11/2026
+## Situação atual — preparação local isolada, 12/11/2026
+
+Ambiente AWS encerrado pelas esteiras; a última pendência, VPC, foi reconciliada após reset no [CD 43132849271, tentativa 2](https://github.com/oficina-mecanica-soat/oficina-mecanica-infra-vpc/actions/runs/43132849271). Não interpretar o runtime implantado no marco de 11/11 abaixo como ambiente atualmente ativo. O controle permanece `destroy` e novos deploys bloqueados.
+
+A reprodução local da F4-04 acrescenta três cenários nos arquivos de teste já existentes: renovação durante commit bloqueado no DynamoDB Local; falha de renovação sem ACK/commit; outbox gerada pela preparação de negócio e retomada por novo worker/provider/cliente após falha persistida e backoff. Usa relógio controlado e o job atual de CI; não introduz pasta de scripts, projeto, componente de produção ou outro modelo de pipeline.
+
+Isso prepara repetição determinística sem carga auxiliar no Pod. Não substitui SQS real, identidade IAM ou reinício de processo/banco: a próxima janela AWS precisa de isolamento/dimensionamento do verificador antes de repetir os cenários reais. Permanecem recuperação de mensagem corrigida da DLQ, ciclo real com estoque, integração e observabilidade completas. O README contém matriz, comando e limites; não declarar F4-04 concluída por esses testes locais.
+
+## Situação registrada e próximos critérios de aceite — 11/11/2026
 
 Os blocos de incrementos abaixo preservam o histórico. Para o funcionamento atual, consultar também o README e os links de execução; pendências históricas de provisionamento/ativação não significam que o runtime continue desligado.
 
