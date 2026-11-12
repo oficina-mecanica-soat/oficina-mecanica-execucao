@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 using FluentAssertions;
 using OficinaMecanica.Execucao.Application.Mensagens;
 
@@ -8,6 +9,51 @@ namespace OficinaMecanica.Execucao.Application.UnitTests;
 
 public sealed class InspecaoMensagemPreparacaoTests
 {
+    [Fact]
+    public async Task Dado_ValorUsualComEscala_Quando_Inspecionar_Entao_PreservaHashDoContratoExistente()
+    {
+        var id = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var dados = new PrepararExecucao(1, id, id, id, [],
+            [new(Guid.Parse("22222222-2222-2222-2222-222222222222"), "Teste", 125.500m,
+                Guid.Parse("33333333-3333-3333-3333-333333333333"))]);
+        var mensagem = Criar("PrepararExecucao") with
+        {
+            OrdemServicoId = id,
+            Dados = JsonSerializer.SerializeToElement(dados, JsonContrato.Options)
+        };
+
+        var inspecao = await InspecaoMensagemPreparacao.InspecionarAsync(JsonContrato.Serializar(mensagem));
+
+        inspecao.HashNegocio.Should().Be("913BB997496AF87A6015500B0F5363EA8651E74617864F69775A8079539A51C9");
+    }
+
+    [Theory]
+    [InlineData("0.00001", "0.0000100")]
+    [InlineData("1E-28", "0.0000000000000000000000000001")]
+    [InlineData("125.50", "125.5000")]
+    [InlineData("79228162514264337593543950335", "79228162514264337593543950335")]
+    public async Task Dado_DecimalValido_Quando_Normalizar_Entao_PreservaPrecisaoEHashEntreEscalas(string texto, string outraEscala)
+    {
+        var valor = decimal.Parse(texto, NumberStyles.Float, CultureInfo.InvariantCulture);
+        var equivalente = decimal.Parse(outraEscala, NumberStyles.Float, CultureInfo.InvariantCulture);
+        var mensagem = Criar("PrepararExecucao");
+        var dados = mensagem.Dados.Deserialize<PrepararExecucao>(JsonContrato.Options)!;
+        Mensagem ComValor(decimal numero) => mensagem with
+        {
+            Dados = JsonSerializer.SerializeToElement(dados with
+            {
+                Servicos = dados.Servicos.Select(s => s with { Valor = numero }).ToArray()
+            }, JsonContrato.Options)
+        };
+
+        var original = await InspecaoMensagemPreparacao.InspecionarAsync(JsonContrato.Serializar(ComValor(valor)));
+        var reentrega = await InspecaoMensagemPreparacao.InspecionarAsync(JsonContrato.Serializar(ComValor(equivalente)));
+
+        original.HashNegocio.Should().Be(reentrega.HashNegocio);
+        original.Mensagem.Dados.GetProperty("servicos")[0].GetProperty("valor").GetDecimal().Should().Be(valor);
+        reentrega.Mensagem.Dados.GetProperty("servicos")[0].GetProperty("valor").GetDecimal().Should().Be(valor);
+    }
+
     [Theory]
     [InlineData("PrepararExecucao")]
     [InlineData("CancelarPreparacao")]
