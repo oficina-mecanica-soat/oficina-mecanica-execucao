@@ -7,6 +7,7 @@ using Moq;
 using OficinaMecanica.Execucao.Application;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Infrastructure.Hosting;
+using OficinaMecanica.Execucao.Infrastructure.Persistencia;
 
 namespace OficinaMecanica.Execucao.Infrastructure.IntegrationTests;
 
@@ -14,6 +15,96 @@ public sealed class ProcessamentoRemotoWorkerTests(DynamoDbFixture fixture) : IC
 {
     private const string Entrada = "https://sqs.us-east-1.amazonaws.com/123456789012/entrada-teste.fifo";
     private const string Resultados = "https://sqs.us-east-1.amazonaws.com/123456789012/resultados-teste.fifo";
+
+    [Fact]
+    public async Task Dado_FalhaPersistidaNaOutbox_Quando_RecriarWorkerECliente_Entao_PublicaMesmoResultadoAposBackoff()
+    {
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        await cenario.SemearAsync();
+        var resultado = await cenario.EnviarAsync(cenario.Comando("PrepararExecucao", cenario.Dados()));
+        var primeira = (await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default))!;
+        var sqsAntes = SqsSemEntrada();
+        sqsAntes.Setup(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("Falha controlada antes do envio"));
+        var clienteAnterior = fixture.CriarClient();
+        using (clienteAnterior)
+        await using (var provider = new ServiceCollection().AddLogging().AddApplication()
+            .AddSingleton<TimeProvider>(cenario.Relogio)
+            .AddInfrastructureRemota(new(cenario.Tabela, Entrada, Resultados), clienteAnterior, sqsAntes.Object)
+            .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true }))
+        {
+            var worker = Assert.IsType<ProcessamentoRemotoWorker>(Assert.Single(provider.GetServices<IHostedService>()));
+            await worker.StartAsync(default);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                PendenciaOutbox? pendencia;
+                do
+                {
+                    pendencia = (await cenario.Armazenamento.ObterPrimeiraOutboxAsync(timeout.Token))?.Ler<PendenciaOutbox>();
+                    if (pendencia?.Tentativas != 1) await Task.Delay(25, timeout.Token);
+                } while (pendencia?.Tentativas != 1);
+
+                Assert.Equal("FALHA_PUBLICACAO", pendencia.UltimoErro);
+                Assert.Equal(cenario.Relogio.GetUtcNow().AddSeconds(2), pendencia.ProximaTentativaEm);
+                Assert.Null(pendencia.LeaseAte);
+                Assert.Equal(resultado.MensagemId, pendencia.Mensagem.MensagemId);
+            }
+            finally { await worker.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10)); }
+            Assert.True(worker.ExecuteTask!.IsCompletedSuccessfully);
+        }
+
+        sqsAntes.Verify(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        var sqsDepois = SqsSemEntrada();
+        var enviado = new TaskCompletionSource<SendMessageRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        sqsDepois.Setup(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()))
+            .Returns((SendMessageRequest pedido, CancellationToken _) =>
+            {
+                enviado.TrySetResult(pedido);
+                return Task.FromResult(new SendMessageResponse { HttpStatusCode = HttpStatusCode.OK, MessageId = "confirmado" });
+            });
+        using var clienteNovo = fixture.CriarClient();
+        Assert.NotSame(clienteAnterior, clienteNovo);
+        await using var novoProvider = new ServiceCollection().AddLogging().AddApplication()
+            .AddSingleton<TimeProvider>(cenario.Relogio)
+            .AddInfrastructureRemota(new(cenario.Tabela, Entrada, Resultados), clienteNovo, sqsDepois.Object)
+            .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+        var novoWorker = Assert.IsType<ProcessamentoRemotoWorker>(Assert.Single(novoProvider.GetServices<IHostedService>()));
+        cenario.Relogio.Avancar(TimeSpan.FromSeconds(3));
+        await novoWorker.StartAsync(default);
+        try
+        {
+            var pedido = await enviado.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(Resultados, pedido.QueueUrl);
+            Assert.Equal(resultado.MensagemId.ToString("D"), pedido.MessageDeduplicationId);
+            Assert.Equal(resultado.OrdemServicoId.ToString("D"), pedido.MessageGroupId);
+            Assert.Equal(JsonContrato.Serializar(resultado), pedido.MessageBody);
+            await AguardarOutboxVaziaAsync(cenario);
+            var enviada = await cenario.Armazenamento.ObterAsync(new("OUTBOX#ENVIADA", primeira.Chave.Ordenacao), default);
+            Assert.Equal(resultado.MensagemId, enviada.Ler<PendenciaOutbox>()!.Mensagem.MensagemId);
+            var saldo = (await cenario.SaldoAsync())!;
+            Assert.Equal(7, saldo.Disponivel);
+            Assert.Equal(3, saldo.Reservada);
+        }
+        finally { await novoWorker.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10)); }
+
+        Assert.True(novoWorker.ExecuteTask!.IsCompletedSuccessfully);
+        sqsDepois.Verify(s => s.SendMessageAsync(It.IsAny<SendMessageRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        sqsAntes.Verify(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        sqsDepois.Verify(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        static Mock<IAmazonSQS> SqsSemEntrada()
+        {
+            var sqs = new Mock<IAmazonSQS>(MockBehavior.Strict);
+            sqs.Setup(s => s.ReceiveMessageAsync(It.IsAny<ReceiveMessageRequest>(), It.IsAny<CancellationToken>()))
+                .Returns(async (ReceiveMessageRequest _, CancellationToken ct) =>
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return new ReceiveMessageResponse();
+                });
+            return sqs;
+        }
+    }
 
     [Fact]
     public async Task Dado_OutboxPersistidaEPollBloqueado_Quando_IniciarWorker_Entao_PublicaEEncerraSemEsperarEntrada()
