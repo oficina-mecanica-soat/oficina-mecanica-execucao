@@ -1,6 +1,23 @@
 # Plano de execução da Fase 4 — Gabriel e integrações com Geovanna
 
-Revisão em 10/11/2026. Este plano detalha a execução do backlog existente e a exigência de uniformidade das esteiras. Não substitui decisões arquiteturais nem declara implementadas as etapas futuras. Merges são realizados por Gabriel; recursos AWS somente pelas esteiras, após aviso para criação do laboratório e atualização dos environments.
+Revisão inicial em 10/11/2026; situação operacional atualizada em 11/11/2026 na seção seguinte. Este plano detalha a execução do backlog existente e a exigência de uniformidade das esteiras. Não substitui decisões arquiteturais nem declara implementadas as etapas futuras. Merges são realizados por Gabriel; recursos AWS somente pelas esteiras, após aviso para criação do laboratório e atualização dos environments.
+
+## Situação atual e próximos critérios de aceite — 11/11/2026
+
+Os blocos de incrementos abaixo preservam o histórico. Para o funcionamento atual, consultar também o README e os links de execução; pendências históricas de provisionamento/ativação não significam que o runtime continue desligado.
+
+| Tarefa | Situação comprovada | Próximo critério |
+| --- | --- | --- |
+| F4-03 | Base do serviço e CI/CD implementados; imagem validada, plano salvo, state por conta e rollout executados. | Manter os gates e o padrão nos próximos PRs. |
+| F4-04 | DynamoDB/FIFO/DLQ/SSM e workload implantados; remoto explícito, identidade acadêmica no startup; preparação persistida e resultado publicado pelo Pod; repetição após recriar Pod mantém revisão de negócio; versão inválida recusada em cinco tentativas e encaminhada automaticamente à DLQ. | Provas específicas de renovação de visibilidade e outbox pendente; recuperação de mensagem corrigida da DLQ e encerramento controlado no momento apropriado. |
+| F4-05 | Regras extraídas, autorização, início manual, finalização/baixa e HTTP próprio implementados e testados. | Ciclo real com estoque, cancelamento e baixa; diagnóstico/prontidão e corte público coordenados com a frente OS. A prova AWS inicial não usou itens de estoque. |
+| F4-10 | Cenários locais e adaptadores preparados; não há prova integrada dos três serviços. | Sucesso, recusa, compensação, falhas e resultados tardios com OS/Orçamento-Pagamento reais, sem acesso cruzado a bancos. |
+| F4-11 | Instrumentação e contexto persistido; Agents prontos e IDs de trace nos logs. | Ingestão/APM e correlação real no Datadog, painéis/métricas/alertas de Saga/DLQ e recuperação observável. |
+| F4-12 a F4-14 | CI e deploy próprio aprovados; PRs #32/#33 promovidos até main. | Entrega integrada, qualidade/cobertura exigidas, documentação atual, revisão dos materiais, vídeo e conferência conjunta. |
+
+Evidência principal: [CD 43124391461, tentativa 2](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43124391461). Caso sintético inicial: `validacao-f4-04-45deea98-1d54-48a7-bdc9-1e6f715f2cc3`. O README distingue observação real, consultas do operador, testes simulados e limites. A correção IMDSv2 acadêmica e a atualização do provider recuperaram o deploy sem remoção/importação/edição do state.
+
+`AWS_DEPLOY_ENABLED=false` bloqueia novas implantações; o runtime já implantado continua remoto. O início físico permanece manual pelo mecânico. Merges continuam com Gabriel; este registro não ativa recursos nem transfere as tarefas de OS, cobrança, autenticação/Gateway da Geovanna.
 
 ## Fontes e nomes dos componentes
 
