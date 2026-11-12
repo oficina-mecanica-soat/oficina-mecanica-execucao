@@ -13,7 +13,7 @@ internal static class ResultadosPreparacao
         Itens = dados.Itens.OrderBy(item => item.ItemId).ToArray(),
         Servicos = dados.Servicos.OrderBy(servico => servico.ServicoId).Select(servico => servico with
         {
-            Valor = decimal.Parse(servico.Valor.ToString("G29", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
+            Valor = decimal.Parse(servico.Valor.ToString("G29", CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture)
         }).ToArray()
     };
 

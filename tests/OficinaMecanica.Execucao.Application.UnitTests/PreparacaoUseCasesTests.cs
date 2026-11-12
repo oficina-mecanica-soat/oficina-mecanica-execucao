@@ -15,6 +15,22 @@ namespace OficinaMecanica.Execucao.Application.UnitTests.Preparacoes;
 
 public sealed class PreparacaoUseCasesTests
 {
+    [Fact]
+    public async Task Dado_ValorPequenoValido_Quando_Preparar_Entao_ReservaERegistraHashCompativelComInspecao()
+    {
+        var c = new Cenario();
+        var dados = c.Dados with { Servicos = c.Dados.Servicos.Select(s => s with { Valor = 0.00001m }).ToArray() };
+        var mensagem = c.Mensagem with { Dados = JsonSerializer.SerializeToElement(dados, JsonContrato.Options) };
+        var inspecao = await InspecaoMensagemPreparacao.InspecionarAsync(JsonContrato.Serializar(mensagem));
+
+        var resultado = await c.Preparar.ExecuteAsync(new(mensagem, dados));
+
+        resultado.Resultado.Dados.GetProperty("diagnostico").GetProperty("servicos")[0].GetProperty("valor").GetDecimal().Should().Be(0.00001m);
+        c.Item.QuantidadeDisponivel.Should().Be(7);
+        c.Item.QuantidadeReservada.Should().Be(3);
+        c.Sessao.Verify(s => s.RegistrarResultadoAsync(mensagem, 1, inspecao.HashNegocio, resultado.Resultado, default), Times.Once);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
