@@ -1,5 +1,24 @@
 name: "☁️ AWS Deploy"
 on:
+  workflow_dispatch:
+    inputs:
+      dlq_action:
+        description: "Operação individual da DLQ (não executa Terraform)"
+        type: choice
+        options: [inspecionar, reenviar, confirmar-remover]
+        required: true
+      mensagem_id:
+        description: "mensagemId original"
+        type: string
+        required: true
+      corpo_sha256:
+        description: "SHA-256 do corpo original (obtido pelo produtor)"
+        type: string
+        required: true
+      conta_aws:
+        description: "Conta AWS esperada com janela autorizada"
+        type: string
+        required: true
   workflow_call:
     inputs:
       environment_name:
@@ -20,7 +39,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: execucao-aws-${{ inputs.environment_name }}
+  group: execucao-aws-${{ inputs.environment_name || 'development' }}
   cancel-in-progress: false
 
 env:
@@ -31,6 +50,7 @@ env:
 
 jobs:
   resolve_action:
+    if: github.event_name != 'workflow_dispatch'
     name: "🔎 01 · Resolver ação do Terraform"
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}
@@ -63,6 +83,160 @@ jobs:
           esac
           echo "terraform_action=$action" >> "$GITHUB_OUTPUT"
           echo "TERRAFORM_ACTION=$action" >> "$GITHUB_ENV"
+
+  operacao_dlq:
+    name: "📨 Operação individual da DLQ"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: development
+    steps:
+      - uses: actions/checkout@v7
+      - name: "🚦 Conferir janela e entradas"
+        env:
+          DEPLOY_ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
+          DLQ_ACTION: ${{ inputs.dlq_action }}
+          MENSAGEM_ID: ${{ inputs.mensagem_id }}
+          CORPO_SHA256: ${{ inputs.corpo_sha256 }}
+          CONTA_AWS: ${{ inputs.conta_aws }}
+        run: |
+          test "$DEPLOY_ENABLED" = true
+          test "$GITHUB_REF" = refs/heads/develop
+          node -e 'if(!["inspecionar","reenviar","confirmar-remover"].includes(process.env.DLQ_ACTION)||! /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(process.env.MENSAGEM_ID)||! /^[0-9a-f]{64}$/i.test(process.env.CORPO_SHA256)||! /^\d{12}$/.test(process.env.CONTA_AWS))process.exit(1)'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - name: "📦 Preparar inspeção com o código da aplicação"
+        run: |
+          mkdir -p "$RUNNER_TEMP/inspecao-dlq"
+          cat > "$RUNNER_TEMP/inspecao-dlq/Inspecao.csproj" <<EOF
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup><ItemGroup><ProjectReference Include="$GITHUB_WORKSPACE/src/OficinaMecanica.Execucao.Application/OficinaMecanica.Execucao.Application.csproj" /></ItemGroup></Project>
+          EOF
+          cat > "$RUNNER_TEMP/inspecao-dlq/Program.cs" <<'CSHARP_INSPECAO'
+          using System.Text.Json;
+          using OficinaMecanica.Execucao.Application.Mensagens;
+          try
+          {
+              var inspecao = await InspecaoMensagemPreparacao.InspecionarAsync(await Console.In.ReadToEndAsync());
+              Console.Write(JsonSerializer.Serialize(new { mensagemId = inspecao.Mensagem.MensagemId,
+                  ordemServicoId = inspecao.Mensagem.OrdemServicoId, hashNegocio = inspecao.HashNegocio }));
+          }
+          catch { Console.Error.Write("Contrato inválido; mensagem preservada."); Environment.ExitCode = 1; }
+          CSHARP_INSPECAO
+          dotnet build "$RUNNER_TEMP/inspecao-dlq/Inspecao.csproj" -c Release --output "$RUNNER_TEMP/inspecao-dlq/bin"
+      - name: "🛡️ Preparar operação limitada"
+        run: |
+          cat > "$RUNNER_TEMP/operacao-dlq.cjs" <<'VALIDACAO_INLINE_5'
+          const cp = require('node:child_process');
+          const crypto = require('node:crypto');
+          const digest = body => crypto.createHash('sha256').update(body, 'utf8').digest('hex');
+          const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) && !/^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(value);
+          function validarEntradas(o) {
+            if (!['inspecionar','reenviar','confirmar-remover'].includes(o.action) || !uuid(o.id) || !/^[a-f0-9]{64}$/i.test(o.digest) || !/^\d{12}$/.test(o.account) || !/^[a-z]{2}-[a-z]+-\d$/.test(o.region)) throw Error('ENTRADAS_INVALIDAS');
+          }
+          async function operar(o, aws, inspecionar, auditar) {
+            validarEntradas(o);
+            const account = (await aws('sts','get-caller-identity')).Account;
+            if(account !== o.account) throw Error('CONTA_DIVERGENTE');
+            const prefix = '/oficina-mecanica/development/';
+            const parameter = async name => (await aws('ssm','get-parameter','--name',prefix+name)).Parameter.Value;
+            if(await parameter('status/execucao') !== 'ready') throw Error('INFRA_NAO_PRONTA');
+            const c = {};
+            for(const name of ['dynamodb_table_name','dynamodb_table_arn','entrada_queue_url','entrada_queue_arn','dlq_url','dlq_arn']) c[name] = await parameter('execucao/'+name);
+            const base = 'oficina-mecanica-execucao-development';
+            for(const [urlKey,arnKey,name] of [['entrada_queue_url','entrada_queue_arn',base+'.fifo'],['dlq_url','dlq_arn',base+'-dlq.fifo']]) {
+              if(c[urlKey] !== `https://sqs.${o.region}.amazonaws.com/${account}/${name}` || c[arnKey] !== `arn:aws:sqs:${o.region}:${account}:${name}`) throw Error('FILA_DIVERGENTE');
+              const attrs = (await aws('sqs','get-queue-attributes','--queue-url',c[urlKey],'--attribute-names','All')).Attributes;
+              if(attrs.QueueArn !== c[arnKey] || attrs.FifoQueue !== 'true') throw Error('FILA_REAL_DIVERGENTE');
+              if(urlKey === 'entrada_queue_url' && JSON.parse(attrs.RedrivePolicy).deadLetterTargetArn !== c.dlq_arn) throw Error('ASSOCIACAO_DLQ_DIVERGENTE');
+              if(urlKey === 'dlq_url') {
+                const policy = JSON.parse(attrs.RedriveAllowPolicy);
+                if(policy.redrivePermission !== 'byQueue' || policy.sourceQueueArns?.length !== 1 || policy.sourceQueueArns[0] !== c.entrada_queue_arn) throw Error('ORIGEM_DLQ_DIVERGENTE');
+              }
+            }
+            if(c.dynamodb_table_name !== base || c.dynamodb_table_arn !== `arn:aws:dynamodb:${o.region}:${account}:table/${base}`) throw Error('TABELA_DIVERGENTE');
+            const table = (await aws('dynamodb','describe-table','--table-name',base)).Table;
+            if(table.TableArn !== c.dynamodb_table_arn || table.TableStatus !== 'ACTIVE') throw Error('TABELA_REAL_DIVERGENTE');
+            const audit = result => auditar({action:o.action,account,environment:'development',mensagemId:o.id,corpoSha256:o.digest.toLowerCase(),result});
+            const restore = async messages => {
+              let failed = false;
+              for(const m of messages) {
+                try { await aws('sqs','change-message-visibility','--queue-url',c.dlq_url,'--receipt-handle',m.ReceiptHandle,'--visibility-timeout','0'); }
+                catch { failed = true; }
+              }
+              if(failed) throw Error('RESTAURACAO_VISIBILIDADE_PENDENTE');
+            };
+            const receive = async () => {
+              const response = await aws('sqs','receive-message','--queue-url',c.dlq_url,'--max-number-of-messages','10','--wait-time-seconds','0','--visibility-timeout','60');
+              if(response.Messages !== undefined && !Array.isArray(response.Messages)) throw Error('RESPOSTA_SQS_INVALIDA');
+              const messages = response.Messages || [];
+              const matches = messages.filter(m => {
+                try { return JSON.parse(m.Body).mensagemId?.toLowerCase() === o.id.toLowerCase() && digest(m.Body) === o.digest.toLowerCase(); }
+                catch { return false; }
+              });
+              if(matches.length !== 1) { await restore(messages); throw Error('MENSAGEM_NAO_LOCALIZADA_OU_AMBIGUA'); }
+              const selected = matches[0];
+              try { await restore(messages.filter(m=>m !== selected)); }
+              catch { await restore([selected]); throw Error('RESTAURACAO_VISIBILIDADE_PENDENTE'); }
+              return selected;
+            };
+            let held = await receive();
+            try {
+              const info = await inspecionar(held.Body);
+              if(!uuid(info.mensagemId) || !uuid(info.ordemServicoId) || info.mensagemId.toLowerCase() !== o.id.toLowerCase() || !/^[A-F0-9]{64}$/.test(info.hashNegocio)) throw Error('INSPECAO_DIVERGENTE');
+              audit('INSPECIONADA');
+              if(o.action === 'inspecionar') return;
+              if(o.action === 'reenviar') {
+                await aws('sqs','send-message','--queue-url',c.entrada_queue_url,'--message-body',held.Body,
+                  '--message-group-id',info.ordemServicoId,'--message-deduplication-id',info.mensagemId);
+                audit('ENVIO_ACEITO_CONFIRMACAO_PENDENTE');
+                return;
+              }
+              const key = JSON.stringify({PK:{S:`MENSAGEM#${info.mensagemId}`},SK:{S:'RECEBIDA'}});
+              const result = await aws('dynamodb','get-item','--table-name',base,'--consistent-read','--key',key);
+              if(!result.Item || !result.Item.conteudo?.S || !(Number(result.Item.revisao?.N)>0) || JSON.parse(result.Item.conteudo.S).hash !== info.hashNegocio) throw Error('COMMIT_AUSENTE_OU_DIVERGENTE');
+              audit('COMMIT_LOCAL_CONFIRMADO');
+              await restore([held]); held = null;
+              held = await receive();
+              // O segundo receive confere novamente identidade e digest e fornece o receipt atual.
+              await aws('sqs','change-message-visibility','--queue-url',c.dlq_url,'--receipt-handle',held.ReceiptHandle,'--visibility-timeout','60');
+              await aws('sqs','delete-message','--queue-url',c.dlq_url,'--receipt-handle',held.ReceiptHandle);
+              held = null;
+              audit('REMOCAO_CONFIRMADA');
+            } finally { if(held) await restore([held]); }
+          }
+          async function main() {
+            const region = process.env.AWS_REGION;
+            const aws = async (...args) => {
+              try {
+                const out = cp.execFileSync('aws',[...args,'--region',region,'--output','json','--no-cli-pager'],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:30000,maxBuffer:16*1024*1024});
+                return out.trim() ? JSON.parse(out) : {};
+              } catch { throw Error('OPERACAO_AWS_FALHOU_RESULTADO_INCERTO'); }
+            };
+            const inspect = async body => {
+              try { return JSON.parse(cp.execFileSync('dotnet',[process.env.RUNNER_TEMP+'/inspecao-dlq/bin/Inspecao.dll'],{input:body,encoding:'utf8',stdio:['pipe','pipe','pipe'],timeout:15000})); }
+              catch { throw Error('CONTRATO_INVALIDO_MENSAGEM_PRESERVADA'); }
+            };
+            try {
+              await operar({action:process.env.DLQ_ACTION,id:process.env.MENSAGEM_ID,digest:process.env.CORPO_SHA256,account:process.env.CONTA_AWS,region},aws,inspect,event=>console.log(JSON.stringify({...event,runId:process.env.GITHUB_RUN_ID})));
+            } catch { console.error('Operação incompleta: não presumir envio, commit ou remoção. Consulte os metadados anteriores e reconcilie com os mesmos IDs.'); process.exitCode=1; }
+          }
+          module.exports={operar,digest,validarEntradas};
+          if(require.main === module) main();
+          VALIDACAO_INLINE_5
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: "📨 Executar fase explicitamente selecionada"
+        env:
+          DLQ_ACTION: ${{ inputs.dlq_action }}
+          MENSAGEM_ID: ${{ inputs.mensagem_id }}
+          CORPO_SHA256: ${{ inputs.corpo_sha256 }}
+          CONTA_AWS: ${{ inputs.conta_aws }}
+        run: node "$RUNNER_TEMP/operacao-dlq.cjs"
 
   prepare_and_plan:
     name: "📋 02 · Preparar variáveis e gerar plano do Terraform"
