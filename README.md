@@ -26,6 +26,8 @@ Na recuperação de outbox, o verificador criou uma pendência sintética tipada
 
 O verificador e seus arquivos ficaram fora do repositório e temporariamente no container; não há código, hook de falha ou estrutura auxiliar versionados. A tentativa de pausar PID 1 foi recusada pela checagem e não enviou mensagem; o serviço seguiu ativo. O reinício eliminou os arquivos temporários do container. O uso de um segundo processo .NET instrumentado no mesmo container excedeu o limite de memória: não repetir essa forma de carga auxiliar no Pod; planejar isolamento do verificador antes de novos cenários. A compilação temporária apresentou NU1900 por indisponibilidade de auditoria NuGet; isso não é evidência de auditoria de dependências aprovada.
 
+Após as provas controladas, foram removidas somente as mensagens com IDs sintéticos conhecidos da entrada/DLQ e o resultado sintético da OS; não houve purge. As consultas finais indicaram zero mensagens visíveis/em voo na entrada e DLQ, outbox do caso em ENVIADA, serviço 1/1 Running e AWS_DEPLOY_ENABLED=false. Os registros DynamoDB de evidência foram preservados.
+
 Ainda faltam recuperação de mensagem corrigida da DLQ, ciclo com estoque e integração completa da Saga, além da formalização reproduzível dos cenários controlados. Reiniciar um Pod após publicação já concluída não comprova recuperação de outbox pendente; a evidência acima é específica à pendência persistida antes do reinício. Este registro não declara F4-04/F4-10/F4-11 concluídas nem prova ingestão no Datadog.
 
 ### Extração de Servico — marco anterior da F4-05
