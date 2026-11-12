@@ -37,6 +37,7 @@ public sealed class ArmazenamentoDynamoDb(IAmazonDynamoDB client, string tabela)
                 itens.Add(new() { Delete = new() { TableName = tabela, Key = Chave(original.Chave), ConditionExpression = condition, ExpressionAttributeValues = valores } });
             else
             {
+                LimitesDocumentoDynamoDb.Validar(original.Chave, alteracao.Json);
                 var documento = Chave(original.Chave);
                 documento["revisao"] = new() { N = (original.Revisao + 1).ToString(CultureInfo.InvariantCulture) };
                 documento["conteudo"] = new() { S = alteracao.Json };
