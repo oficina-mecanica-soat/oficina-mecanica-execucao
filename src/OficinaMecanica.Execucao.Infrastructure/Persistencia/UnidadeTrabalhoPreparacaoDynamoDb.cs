@@ -4,6 +4,7 @@ using OficinaMecanica.Execucao.Application.Preparacoes;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Aggregates;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Entities;
 using OficinaMecanica.Execucao.Domain.GestaoEstoque.Interfaces;
+using OficinaMecanica.Execucao.Domain.Shared.Exceptions;
 
 namespace OficinaMecanica.Execucao.Infrastructure.Persistencia;
 
@@ -16,7 +17,18 @@ public sealed class UnidadeTrabalhoPreparacaoDynamoDb(IArmazenamentoExecucao arm
             var tx = new TransacaoExecucao(armazenamento);
             try
             {
-                var resultado = await operacao(new SessaoPreparacao(tx));
+                T resultado;
+                try
+                {
+                    resultado = await operacao(new SessaoPreparacao(tx));
+                }
+                catch (Exception error) when (error is DomainException or ContratoMensagemException or PreparacaoNaoEncontradaException)
+                {
+                    // Leituras individuais não formam um snapshot. Antes de propagar a recusa,
+                    // conferir as revisões sem gravar alterações parciais desta tentativa.
+                    await tx.ValidarLeiturasAsync(cancellationToken);
+                    throw;
+                }
                 await tx.ConfirmarAsync(cancellationToken);
                 return resultado;
             }

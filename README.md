@@ -38,6 +38,8 @@ O runner compila um adaptador temporário que referencia a Application e retorna
 
 Referências operacionais: [recebimento limitado e visibilidade no SQS](https://docs.aws.amazon.com/cli/latest/reference/sqs/receive-message.html) e [exclusão com o receipt mais recente](https://docs.aws.amazon.com/cli/latest/reference/sqs/delete-message.html). A operação renova a visibilidade da cópia recebida novamente antes de solicitar a exclusão; falha nessa renovação também bloqueia a remoção.
 
+Na recuperação concorrente, leituras consistentes individuais do DynamoDB não formam um snapshot entre registros. A unidade de trabalho agora confere atomicamente as revisões lidas antes de propagar uma recusa de domínio/contrato ou preparação ausente. Se outro commit alterou essas revisões, repete com uma nova sessão pelo limite de tentativas existente; se não mudou, preserva o erro original. Essa conferência usa somente condições, sem gravar alterações parciais da tentativa recusada. O teste determinístico intercala um cancelamento completo antes da leitura de saldo do outro, verifica retomada pelo mesmo resultado e saldo liberado uma única vez.
+
 ### Reprodução local isolada — F4-04, 12/11/2026
 
 Os cenários integram os projetos de teste existentes, executados pelo job de testes do CI. DynamoDB Local usa a fixture Testcontainers já adotada, com tabela exclusiva por cenário; SQS é simulado com Moq. Não executam verificador auxiliar dentro do Pod, não compartilham o container da aplicação nem usam credenciais AWS. A dependência de relógio controlado é a mesma versão já usada nos testes unitários.
