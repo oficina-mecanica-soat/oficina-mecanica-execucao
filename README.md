@@ -361,6 +361,24 @@ Validação local: 299 testes aprovados, nenhum ignorado; cobertura consolidada 
 
 ## Configuração remota do workload pela esteira — F4-04
 
+### Recuperação do provider após timeout de criação
+
+Após corrigir IMDSv2 na infraestrutura Kubernetes, o Pod iniciou, mas o novo plano falhou em `kubernetes_deployment_v1.execucao` com `Unexpected Identity Change`: identidade anterior com campos nulos e identidade real preenchida na leitura. O primeiro apply havia criado o Deployment e terminado em timeout de rollout; o state parcial foi preservado pela esteira.
+
+O provider Kubernetes fica fixado em `3.2.1`, que inclui a correção de identidade após recursos demorarem a ficar prontos, conforme [changelog oficial da HashiCorp](https://github.com/hashicorp/terraform-provider-kubernetes/blob/main/CHANGELOG.md#321-jun-30-2026). O lockfile acompanha essa seleção; Terraform 1.15.8, provider AWS, recursos `*_v1`, workflows e contratos permanecem os mesmos. A configuração e os nove testes Terraform com providers simulados passam, mas a recuperação do state real exige a próxima execução autorizada após merge.
+
+Não remover, importar, editar ou descartar state como atalho. O próximo plano deverá restaurar o cache da conta, usar o provider corrigido e evidenciar as ações propostas, inclusive eventual substituição do Deployment marcado pela falha anterior. Não há autorização para apagar tabela ou filas; healthcheck do Pod não comprova identidade/permissões DynamoDB/SQS nem encerra a F4-04. Este PR não executa apply.
+
+### Preparação do próximo apply
+
+O controle versionado retorna para `TERRAFORM_ACTION=apply` após o bootstrap de state da conta do laboratório. `AWS_DEPLOY_ENABLED=false` e o processamento remoto desligado permanecem até janela específica. Este preparo não executa deploy nem modifica o host, contratos ou recursos declarados.
+
+O futuro apply utilizará a esteira existente: validação da plataforma/registry, restauração e conferência do state por conta/ambiente, plano salvo por tentativa, publicação da imagem aprovada na CI, aplicação desse mesmo plano, verificações reais de dados/mensageria e rollout. Não altera os workflows, quality gates, promoções ou guardrails de destroy.
+
+Serão provisionados os recursos já declarados do Execução: tabela DynamoDB, entrada FIFO/DLQ e redrive, contratos SSM e workload Kubernetes próprio (namespace, configuração, Secret, Deployment e Service). Consome EKS/ECR compartilhados, sem recriar rede, cluster, RDS ou recursos da OS. Não cria role IAM nem copia credenciais do runner para o Pod.
+
+Para a validação remota da F4-04, a janela deverá incluir habilitação explícita de `PROCESSAMENTO_REMOTO_HABILITADO`, exigindo o contrato real da fila da OS e identidade `LabRole` validada no Pod, conforme ADR-0025. A aprovação deste PR não habilita esse controle. Health/rollout não comprovam acesso DynamoDB/SQS: identidade, leitura/escrita, consumo/renovação/ACK, publicação, duplicatas e recuperação continuam pendentes de evidência real. A integração completa da Saga permanece na F4-10 com as frentes responsáveis.
+
 Após Execução #24/API #350, o Terraform fornece ao Deployment os parâmetros do host remoto. O controle `PROCESSAMENTO_REMOTO_HABILITADO` é uma GitHub Variable usada pelo job existente de preparação do Environment: ausente/`false` mantém remoto desligado; somente `true` solicita ativação na futura aplicação do plano. Outro valor bloqueia apply antes de consultar contratos. Não é credencial ou novo contrato SSM. `AWS_DEPLOY_ENABLED` continua sendo a barreira de deploy, independente desse controle. Alterar variables não executa deploy por si só; a execução segue os triggers e guardrails existentes.
 
 Com remoto solicitado, a preparação exige `/oficina-mecanica/{ambiente}/status/api=ready`, lê os contratos existentes `api/entrada_queue_url` e `api/entrada_queue_arn` e compara com o nome aprovado `oficina-mecanica-api-{ambiente}.fifo`, a conta autenticada e a região. Consulta o ARN real via GetQueueAttributes antes de gerar tfvars/plano. Ausência, divergência ou falha de acesso bloqueiam; não usa URL manual, outra fila ou conta por fallback. O marcador é de infraestrutura de mensageria, não prova de saúde da OS/Saga.
