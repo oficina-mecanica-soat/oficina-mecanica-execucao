@@ -106,6 +106,12 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
     public async Task RegistrarResultadoAsync(Mensagem mensagem, int versao,
         string hash, Mensagem resultado, CancellationToken ct)
     {
+        if (mensagem.Tipo == "PrepararExecucao")
+        {
+            var estado = await tx.LerAsync<EstadoPreparacao>(ChavesExecucao.Preparacao(mensagem.OrdemServicoId, versao), ct)
+                ?? throw new PreparacaoNaoEncontradaException();
+            LimitesDocumentoDynamoDb.ValidarCrescimento(mensagem.OrdemServicoId, versao, estado, mensagem);
+        }
         var operacao = ChavesExecucao.Operacao(mensagem.OrdemServicoId, versao, mensagem.Tipo);
         tx.Salvar(ChavesExecucao.Recebida(mensagem.MensagemId), new MensagemRecebida(hash));
         tx.Salvar(operacao, new OperacaoProcessada(hash, resultado));
@@ -116,8 +122,13 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
     {
         var sequencia = await tx.LerAsync<SequenciaOutbox>(ChavesExecucao.SequenciaOutbox, ct);
         var proxima = checked((sequencia?.Valor ?? 0) + 1);
+        var chave = ChavesExecucao.Outbox(proxima, resultado);
+        var maiorPendencia = new PendenciaOutbox(resultado, int.MaxValue, DateTimeOffset.MaxValue,
+            new string('F', 32), DateTimeOffset.MaxValue, "FALHA_PUBLICACAO");
+        LimitesDocumentoDynamoDb.Validar(chave, JsonContrato.Serializar(maiorPendencia));
+        LimitesDocumentoDynamoDb.Validar(new("OUTBOX#ENVIADA", chave.Ordenacao), JsonContrato.Serializar(maiorPendencia));
         tx.Salvar(ChavesExecucao.SequenciaOutbox, new SequenciaOutbox(proxima));
-        await tx.AdicionarAsync(ChavesExecucao.Outbox(proxima, resultado), new PendenciaOutbox(resultado), ct);
+        await tx.AdicionarAsync(chave, new PendenciaOutbox(resultado), ct);
     }
 }
 
