@@ -2,7 +2,17 @@
 
 Revisão inicial em 10/11/2026; atualizações operacionais e de validação local em 11–12/11/2026 nas seções seguintes. Este plano detalha a execução do backlog existente e a exigência de uniformidade das esteiras. Não substitui decisões arquiteturais nem declara implementadas as etapas futuras. Merges são realizados por Gabriel; recursos AWS somente pelas esteiras, após aviso para criação do laboratório e atualização dos environments.
 
-## Situação atual — preparação local isolada, 12/11/2026
+## Situação atual — validação AWS retomada, 12/11/2026
+
+Após autorização de nova janela, as esteiras retomaram VPC, Kubernetes/Datadog, RDS, API e Execução. O [deploy 43318831037](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43318831037) e a promoção Execução #48/#49/#50 até `main` concluíram. Controle em `apply`, deploy e processamento remoto habilitados nesta janela; nenhum destroy executado nesta rodada. O estado é datado e depende da sessão Academy.
+
+Verificador local excepcionalmente autorizado, isolado do Pod, validou reserva/duplicata, autorização sem início automático, ações manuais/baixa e cancelamento com estoque no DynamoDB real. O reenvio individual da mensagem sintética inserida diretamente na DLQ passou pelas fases de inspeção, envio e confirmação/remoção do workflow aprovado. Seis resultados desses casos foram recebidos na fila OS, sem consumidor da Saga envolvido.
+
+A prova seguinte gerou reserva/outbox com o caso de uso oficial pelo verificador, aplicou agendamento técnico e falha de transporte controlados, confirmou tentativa/erro persistidos, recriou somente o Pod e observou a mesma pendência antes do agendamento. O worker novo publicou o mesmo ID/corpo e gravou `ENVIADA`, preservando saldo 7/3. Não houve processo auxiliar no container, mudança de imagem, Terraform ou configuração. Isso comprova retomada pelo workload após recriação; não comprova indisponibilidade real do SQS ou geração inicial da pendência pelo Pod. O README registra IDs, workflows e limites de cada prova.
+
+Próximos passos: correções pontuais da triagem AUD após os testes, controles antes da operação afetada (incluindo AUD-002 antes de destroy RDS), integração com OS/Orçamento-Pagamento e evidências distribuídas. Não repetir a preparação do laboratório como se ainda estivesse encerrado. Não declarar F4-04/F4-10/F4-11 completas: não repetidos nesta janela renovação com falha/commit lento, cenário de payload corrigido da DLQ, Saga integrada e ingestão Datadog.
+
+## Histórico — preparação local isolada anterior à reabertura, 12/11/2026
 
 Ambiente AWS encerrado pelas esteiras; a última pendência, VPC, foi reconciliada após reset no [CD 43132849271, tentativa 2](https://github.com/oficina-mecanica-soat/oficina-mecanica-infra-vpc/actions/runs/43132849271). Não interpretar o runtime implantado no marco de 11/11 abaixo como ambiente atualmente ativo. O controle permanece `destroy` e novos deploys bloqueados.
 
