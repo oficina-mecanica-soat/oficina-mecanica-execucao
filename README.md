@@ -18,7 +18,27 @@ O contrato aprovado na [RFC-0007, PR #360 da API](https://github.com/oficina-mec
 
 A leitura/validação do envelope foi extraída do `ProcessadorPreparacao` e é compartilhada com ele, preservando os códigos de erro e a filtragem de trace no processamento. O resultado da inspeção mantém a mensagem original; a normalização serve somente ao cálculo do hash, sem reescrever o corpo. IDs técnicos, correlação e trace não entram no hash de negócio; o digest do corpo para seleção operacional continua sendo outra informação.
 
-Este incremento não adiciona endpoint, comando de host, workflow, pasta auxiliar ou recurso AWS. Ainda faltam as fases operacionais de inspeção limitada, envio FIFO, leitura consistente do registro `RECEBIDA`, reconciliação e exclusão com receipt atual no workflow existente. Nenhum reenvio está habilitado. A prova real permanece dependente de janela AWS autorizada; F4-04 não está concluída.
+O incremento inicial de inspeção não adicionou endpoint, comando de host, workflow, pasta auxiliar ou recurso AWS. A operação controlada no workflow existente está descrita a seguir. A prova real permanece dependente de janela AWS autorizada; F4-04 não está concluída.
+
+### Operação individual da DLQ pela esteira — preparada, sem execução AWS
+
+O workflow existente `AWS Deploy` (`aws-deploy.yml`) admite acionamento manual em `develop`, usando o Environment `development`, as mesmas credenciais e a mesma concorrência `execucao-aws-development` de apply/destroy. Exige `AWS_DEPLOY_ENABLED=true` em janela explicitamente autorizada. A configuração atual permanece bloqueada; merge não autoriza executá-la. O acionamento manual pula o resolvedor Terraform e seus dependentes, sem ler/alterar a ação versionada ou disparar promoção Git Flow. A disponibilidade do botão manual depende de o workflow também existir na branch padrão, conforme funcionamento do GitHub Actions; selecionar sempre `develop`, pois outras refs são bloqueadas.
+
+Entradas obrigatórias: `dlq_action`, `mensagem_id`, `corpo_sha256` e `conta_aws`. O digest SHA-256 corresponde aos bytes UTF-8 do corpo original e deve ser obtido com o produtor responsável, sem publicar o corpo em logs/artifacts. A operação procura somente um lote de até dez mensagens por recebimento; não encontrar a mensagem não comprova que a DLQ está vazia. A inspeção também altera contagem de recebimentos/visibilidade. Não há varredura ou purge.
+
+| Ação manual | Efeito e confirmação |
+| --- | --- |
+| `inspecionar` | Confere conta/região, contratos SSM, tabela e filas reais, associação entrada/DLQ e uma mensagem pelo ID/digest. Valida pelo código da Application; restaura a visibilidade de todas as recebidas. Não envia ou exclui. |
+| `reenviar` | Após a mesma inspeção, envia o corpo original com `MessageGroupId=ordemServicoId` e `MessageDeduplicationId=mensagemId`. Mantém a cópia na DLQ e registra apenas aceitação de transporte; deduplicação pode impedir nova entrega. |
+| `confirmar-remover` | Não envia. Exige leitura consistente de `RECEBIDA` com revisão positiva e hash de negócio correspondente. Libera a cópia, recebe novamente e reconfere ID/digest antes de excluir com o receipt atual. |
+
+Executar cada fase somente após revisar a anterior. Em falha/interrupção, não alterar IDs ou payload: repetir inspeção/reconciliação com a mesma identidade. Um commit anterior compatível permite concluir a confirmação após uma interrupção, sem novos efeitos. Se não houver commit, houver divergência, falha de acesso ou exclusão incerta, a execução falha sem anunciar remoção confirmada. Se a exclusão tiver sido aceita antes de uma interrupção, a mensagem pode não reaparecer: ausência na inspeção limitada não é prova de exclusão. Investigar antes de encerrar a ocorrência. Reenvio não recupera a posição histórica na FIFO e não contorna regras de estado, versão ou início manual.
+
+O runner compila um adaptador temporário que referencia a Application e retorna apenas IDs/hash, sem executar no Pod. Operação e testes ficam inline nos YAMLs; código temporário fica fora do repositório. Auditoria inclui fase, conta/ambiente, run ID, IDs, digest e resultado; erros não expõem corpo, receipt ou credenciais. Não cria tabela, recurso, caminho SSM, política IAM ou nova esteira. Testes com AWS simulada e adaptador .NET real não comprovam permissões, transporte FIFO ou exclusão reais; essa prova permanece pendente da próxima janela autorizada.
+
+Referências operacionais: [recebimento limitado e visibilidade no SQS](https://docs.aws.amazon.com/cli/latest/reference/sqs/receive-message.html) e [exclusão com o receipt mais recente](https://docs.aws.amazon.com/cli/latest/reference/sqs/delete-message.html). A operação renova a visibilidade da cópia recebida novamente antes de solicitar a exclusão; falha nessa renovação também bloqueia a remoção.
+
+Na recuperação concorrente, leituras consistentes individuais do DynamoDB não formam um snapshot entre registros. A unidade de trabalho agora confere atomicamente as revisões lidas antes de propagar uma recusa de domínio/contrato ou preparação ausente. Se outro commit alterou essas revisões, repete com uma nova sessão pelo limite de tentativas existente; se não mudou, preserva o erro original. Essa conferência usa somente condições, sem gravar alterações parciais da tentativa recusada. O teste determinístico intercala um cancelamento completo antes da leitura de saldo do outro, verifica retomada pelo mesmo resultado e saldo liberado uma única vez.
 
 ### Reprodução local isolada — F4-04, 12/11/2026
 
