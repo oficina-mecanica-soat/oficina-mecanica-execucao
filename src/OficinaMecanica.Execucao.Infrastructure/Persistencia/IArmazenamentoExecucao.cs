@@ -46,4 +46,8 @@ public sealed class TransacaoExecucao(IArmazenamentoExecucao armazenamento)
 
     public Task ConfirmarAsync(CancellationToken cancellationToken)
         => armazenamento.ConfirmarAsync(_registros.Values.ToArray(), cancellationToken);
+
+    public Task ValidarLeiturasAsync(CancellationToken cancellationToken)
+        => _registros.Count == 0 ? Task.CompletedTask : armazenamento.ConfirmarAsync(
+            _registros.Values.Select(registro => new AlteracaoRegistro(registro.Original, false, registro.Original.Json)).ToArray(), cancellationToken);
 }

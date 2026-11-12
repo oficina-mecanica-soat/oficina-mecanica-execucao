@@ -368,6 +368,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - name: "🧪 Validar adaptador temporário de inspeção da DLQ"
+        run: |
+          node <<'TESTAR_ADAPTADOR_DLQ'
+          const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),assert=require('node:assert/strict');
+          const origem=fs.readFileSync('.github/workflows/aws-deploy.yml','utf8');
+          const cs=origem.match(/          cat > "\$RUNNER_TEMP\/inspecao-dlq\/Program.cs" <<'CSHARP_INSPECAO'\r?\n([\s\S]*?)          CSHARP_INSPECAO/);
+          const projeto=origem.match(/          cat > "\$RUNNER_TEMP\/inspecao-dlq\/Inspecao.csproj" <<EOF\r?\n([\s\S]*?)          EOF/);
+          if(!cs || !projeto)throw Error('Adaptador ausente');
+          const dir=path.join(process.env.RUNNER_TEMP,'inspecao-dlq');fs.mkdirSync(dir,{recursive:true});
+          const desindentar=texto=>texto.split(/\r?\n/).map(l=>l.slice(10)).join('\n');
+          fs.writeFileSync(path.join(dir,'Program.cs'),desindentar(cs[1]));
+          fs.writeFileSync(path.join(dir,'Inspecao.csproj'),desindentar(projeto[1]).replaceAll('$GITHUB_WORKSPACE',process.cwd().replaceAll('\\','/')));
+          cp.execFileSync('dotnet',['build',path.join(dir,'Inspecao.csproj'),'-c','Release','--output',path.join(dir,'bin')],{stdio:'inherit'});
+          const id='11111111-1111-1111-1111-111111111111';
+          const mensagem={mensagemId:id,tipo:'AutorizarExecucao',versao:1,sagaId:id,ordemServicoId:id,correlationId:'teste-adaptador',causationId:id,ocorridoEm:'2026-11-12T12:00:00Z',dados:{preparacaoId:id,versaoOrcamento:1}};
+          const executar=input=>cp.spawnSync('dotnet',[path.join(dir,'bin','Inspecao.dll')],{input:JSON.stringify(input),encoding:'utf8'});
+          const valido=executar(mensagem);assert.equal(valido.status,0,valido.stderr);
+          const info=JSON.parse(valido.stdout);assert.deepEqual(Object.keys(info).sort(),['hashNegocio','mensagemId','ordemServicoId']);
+          assert.equal(info.mensagemId,id);assert.equal(info.ordemServicoId,id);assert.match(info.hashNegocio,/^[A-F0-9]{64}$/);
+          const invalido=executar({...mensagem,versao:2});assert.notEqual(invalido.status,0);assert.equal(invalido.stdout,'');
+          assert(!invalido.stderr.includes(id));console.log('Adaptador usa a aplicação e não expõe corpo em falhas.');
+          TESTAR_ADAPTADOR_DLQ
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.15.8"
@@ -380,7 +405,7 @@ jobs:
           const origem = fs.readFileSync('.github/workflows/aws-deploy.yml', 'utf8');
           // Extrai os mesmos blocos literais usados pelo CD; não mantém outra cópia da lógica.
           const blocos = [...origem.matchAll(/^([ ]*)cat > "\$RUNNER_TEMP\/([^"\/]+\.cjs)" <<'(VALIDACAO_INLINE_\d+)'\r?\n([\s\S]*?)^\1\3\r?$/gm)];
-          const esperados = ["bootstrap-account-state.cjs", "preparar-ambiente-execucao.cjs", "prepare-destroy.cjs", "validar-ownership-plano.cjs", "verificar-infra-execucao.cjs"];
+          const esperados = ["bootstrap-account-state.cjs", "preparar-ambiente-execucao.cjs", "prepare-destroy.cjs", "validar-ownership-plano.cjs", "verificar-infra-execucao.cjs", "operacao-dlq.cjs"];
           if (blocos.length !== esperados.length || !esperados.every(nome => blocos.some(bloco => bloco[2] === nome))) throw new Error('Blocos de validação ausentes ou divergentes.');
           for (const bloco of blocos) {
             const codigo = bloco[4].split('\n').map(linha => linha.slice(bloco[1].length)).join('\n');
@@ -625,7 +650,74 @@ jobs:
             for(const actions of [['no-op'],['delete'],['forget']]) verifyPlan({resource_changes:[{change:{actions}}]});
           });
           TESTE_INLINE_3
-          node --test "$RUNNER_TEMP/bootstrap-account-state.test.cjs" "$RUNNER_TEMP/contratos-execucao.test.cjs" "$RUNNER_TEMP/infra-execucao.test.cjs" "$RUNNER_TEMP/prepare-destroy.test.cjs"
+          cat > "$RUNNER_TEMP/operacao-dlq.test.cjs" <<'TESTE_INLINE_DLQ'
+          const {test}=require('node:test');
+          const assert=require('node:assert/strict');
+          const {operar,digest}=require('./operacao-dlq.cjs');
+          const id='11111111-1111-1111-1111-111111111111',os='22222222-2222-2222-2222-222222222222';
+          function cenario(action='confirmar-remover', falha='') {
+            const account='123456789012',region='us-east-1',base='oficina-mecanica-execucao-development';
+            const url='https://sqs.'+region+'.amazonaws.com/'+account+'/',arn='arn:aws:sqs:'+region+':'+account+':';
+            const c={dynamodb_table_name:base,dynamodb_table_arn:'arn:aws:dynamodb:'+region+':'+account+':table/'+base,
+              entrada_queue_url:url+base+'.fifo',entrada_queue_arn:arn+base+'.fifo',dlq_url:url+base+'-dlq.fifo',dlq_arn:arn+base+'-dlq.fifo'};
+            const body=JSON.stringify({mensagemId:id}),hash='A'.repeat(64),calls=[],audit=[];
+            let received=0;
+            const aws=async(...args)=>{
+              calls.push(args);const op=args[1],get=key=>args[args.indexOf(key)+1];
+              if(op==='get-caller-identity')return {Account:falha==='conta'?'999999999999':account};
+              if(op==='get-parameter'){const name=get('--name').split('/').at(-1);return {Parameter:{Value:name==='execucao'?'ready':c[name]}};}
+              if(op==='get-queue-attributes')return {Attributes:{QueueArn:get('--queue-url')===c.dlq_url?c.dlq_arn:c.entrada_queue_arn,FifoQueue:'true',
+                RedrivePolicy:JSON.stringify({deadLetterTargetArn:falha==='associacao'?'outra':c.dlq_arn}),RedriveAllowPolicy:JSON.stringify({redrivePermission:'byQueue',sourceQueueArns:[c.entrada_queue_arn]})}};
+              if(op==='describe-table')return {Table:{TableArn:c.dynamodb_table_arn,TableStatus:'ACTIVE'}};
+              if(op==='receive-message') {
+                received++;
+                const selected={Body:falha==='corpo' || (falha==='troca' && received===2)?body+' ':body,ReceiptHandle:'receipt-'+received};
+                return {Messages:falha==='duplicada'?[selected,{...selected,ReceiptHandle:'outra-copia'}]:[selected,{Body:'invalida',ReceiptHandle:'alheia'}]};
+              }
+              if(op==='get-item')return falha==='sem-commit'?{}:{Item:{conteudo:{S:JSON.stringify({hash:falha==='hash'?'B'.repeat(64):hash})},revisao:{N:'1'}}};
+              if(op==='change-message-visibility' && get('--receipt-handle')==='alheia' && falha==='visibilidade')throw Error('falha');
+              if((op==='delete-message' && falha==='delete')||(op==='send-message' && falha==='send'))throw Error('falha');
+              return {};
+            };
+            const inspect=async()=>{if(falha==='invalida')throw Error('invalida');return {mensagemId:id,ordemServicoId:os,hashNegocio:hash}};
+            return {o:{action,id,digest:digest(body),account,region},aws,inspect,calls,audit,run(){return operar(this.o,aws,inspect,e=>audit.push(e));}};
+          }
+          test('inspeção não envia nem exclui e restaura inclusive mensagem alheia',async()=>{
+            const c=cenario('inspecionar');await c.run();
+            assert.equal(c.calls.filter(a=>a[1]==='change-message-visibility').length,2);
+            assert(!c.calls.some(a=>['send-message','delete-message','get-item'].includes(a[1])));
+          });
+          test('aceitação de envio, inclusive deduplicada sem entrega, não exclui',async()=>{
+            const c=cenario('reenviar');await c.run();const send=c.calls.find(a=>a[1]==='send-message');
+            assert.equal(send[send.indexOf('--message-deduplication-id')+1],id);
+            assert.equal(send[send.indexOf('--message-group-id')+1],os);
+            assert.equal(send[send.indexOf('--message-body')+1],JSON.stringify({mensagemId:id}));
+            assert(!c.calls.some(a=>a[1]==='delete-message'));
+          });
+          test('commit anterior permite retomada sem novo envio, com leitura consistente e receipt novo',async()=>{
+            const c=cenario();await c.run();
+            assert(c.calls.find(a=>a[1]==='get-item').includes('--consistent-read'));
+            const del=c.calls.find(a=>a[1]==='delete-message');assert.equal(del.at(-1),'receipt-2');
+            assert(!c.calls.some(a=>a[1]==='send-message'));
+            assert.equal(c.audit.at(-1).result,'REMOCAO_CONFIRMADA');
+            assert(!JSON.stringify(c.audit).includes('receipt'));
+          });
+          for(const falha of ['conta','associacao','corpo','duplicada','invalida','sem-commit','hash','troca','visibilidade']) {
+            test('bloqueia remoção quando '+falha,async()=>{
+              const c=cenario('confirmar-remover',falha);await assert.rejects(()=>c.run());
+              assert(!c.calls.some(a=>a[1]==='delete-message'));
+              assert(!c.audit.some(a=>a.result==='REMOCAO_CONFIRMADA'));
+            });
+          }
+          for(const [action,falha] of [['reenviar','send'],['confirmar-remover','delete']]) {
+            test('resposta incerta em '+falha+' preserva pendência',async()=>{
+              const c=cenario(action,falha);await assert.rejects(()=>c.run());
+              assert(!c.audit.some(a=>a.result==='REMOCAO_CONFIRMADA'));
+              assert(c.calls.some(a=>a[1]==='change-message-visibility' && a.at(-1)==='0'));
+            });
+          }
+          TESTE_INLINE_DLQ
+          node --test "$RUNNER_TEMP/bootstrap-account-state.test.cjs" "$RUNNER_TEMP/contratos-execucao.test.cjs" "$RUNNER_TEMP/infra-execucao.test.cjs" "$RUNNER_TEMP/prepare-destroy.test.cjs" "$RUNNER_TEMP/operacao-dlq.test.cjs"
 
       - run: terraform fmt -check -recursive infra/terraform
       - run: terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
