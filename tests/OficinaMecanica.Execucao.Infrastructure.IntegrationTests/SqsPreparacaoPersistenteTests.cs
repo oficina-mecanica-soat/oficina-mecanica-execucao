@@ -3,6 +3,7 @@ using System.Text.Json;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using Moq;
+using Microsoft.Extensions.Time.Testing;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using OficinaMecanica.Execucao.Infrastructure.Persistencia;
@@ -13,6 +14,93 @@ public sealed class SqsPreparacaoPersistenteTests(DynamoDbFixture fixture) : ICl
 {
     private const string Entrada = "https://sqs.us-east-1.amazonaws.com/123456789012/entrada-teste.fifo";
     private const string Resultados = "https://sqs.us-east-1.amazonaws.com/123456789012/resultados-teste.fifo";
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dado_CommitBloqueado_Quando_RenovarVisibilidade_Entao_AckESaldoDependemDoCommit(bool falharRenovacao)
+    {
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        await cenario.SemearAsync();
+        var armazenamento = new ArmazenamentoCommitControlado(cenario.Armazenamento);
+        var processador = CenarioPreparacao.CriarProcessador(armazenamento, cenario.Relogio);
+        var sqs = new Mock<IAmazonSQS>(MockBehavior.Strict);
+        var comando = cenario.Comando("PrepararExecucao", cenario.Dados());
+        ConfigurarRecepcao(sqs, comando);
+        var renovou = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        sqs.Setup(s => s.ChangeMessageVisibilityAsync(It.IsAny<ChangeMessageVisibilityRequest>(), It.IsAny<CancellationToken>()))
+            .Returns((ChangeMessageVisibilityRequest pedido, CancellationToken _) =>
+            {
+                Assert.Equal(Entrada, pedido.QueueUrl);
+                Assert.Equal("recibo", pedido.ReceiptHandle);
+                Assert.Equal(60, pedido.VisibilityTimeout);
+                renovou.TrySetResult();
+                return falharRenovacao
+                    ? Task.FromException<ChangeMessageVisibilityResponse>(new IOException("Renovação incerta"))
+                    : Task.FromResult(new ChangeMessageVisibilityResponse { HttpStatusCode = HttpStatusCode.OK });
+            });
+        sqs.Setup(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                var saldo = (await cenario.SaldoAsync())!;
+                Assert.Equal(7, saldo.Disponivel);
+                Assert.Equal(3, saldo.Reservada);
+                Assert.NotNull(await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default));
+                return new DeleteMessageResponse { HttpStatusCode = HttpStatusCode.OK };
+            });
+        var relogio = new FakeTimeProvider();
+        var consumidor = new ConsumidorSqs(sqs.Object, processador, Entrada, relogio);
+        using var limite = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var consumo = consumidor.ProcessarProximaAsync(limite.Token);
+        try
+        {
+            await armazenamento.CommitIniciado.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(10, (await cenario.SaldoAsync())!.Disponivel);
+            Assert.Null(await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default));
+            relogio.Advance(TimeSpan.FromSeconds(20));
+            await renovou.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            sqs.Verify(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+
+            if (falharRenovacao)
+            {
+                await Assert.ThrowsAsync<IOException>(() => consumo.WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.Equal(10, (await cenario.SaldoAsync())!.Disponivel);
+                Assert.Null(await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default));
+                Assert.Null((await cenario.Armazenamento.ObterAsync(ChavesExecucao.Atual(cenario.OsId), default)).Json);
+                Assert.Null((await cenario.Armazenamento.ObterAsync(ChavesExecucao.Recebida(comando.MensagemId), default)).Json);
+                sqs.Verify(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+            }
+            else
+            {
+                armazenamento.LiberarCommit.TrySetResult();
+                Assert.True(await consumo.WaitAsync(TimeSpan.FromSeconds(5)));
+                sqs.Verify(s => s.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+            }
+
+            relogio.Advance(TimeSpan.FromMinutes(2));
+            sqs.Verify(s => s.ChangeMessageVisibilityAsync(It.IsAny<ChangeMessageVisibilityRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+        finally
+        {
+            limite.Cancel();
+            armazenamento.LiberarCommit.TrySetResult();
+            try { await consumo; } catch (OperationCanceledException) { } catch (IOException) { }
+        }
+    }
+
+    private sealed class ArmazenamentoCommitControlado(IArmazenamentoExecucao original) : IArmazenamentoExecucao
+    {
+        public TaskCompletionSource CommitIniciado { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource LiberarCommit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<Registro> ObterAsync(ChaveRegistro chave, CancellationToken ct) => original.ObterAsync(chave, ct);
+        public Task<Registro?> ObterPrimeiraOutboxAsync(CancellationToken ct) => original.ObterPrimeiraOutboxAsync(ct);
+        public async Task ConfirmarAsync(IReadOnlyCollection<AlteracaoRegistro> registros, CancellationToken ct)
+        {
+            CommitIniciado.TrySetResult();
+            await LiberarCommit.Task.WaitAsync(ct);
+            await original.ConfirmarAsync(registros, ct);
+        }
+    }
 
     [Fact]
     public async Task Dado_ComandoSqs_Quando_PrepararReentregarECancelar_Entao_AckSegueCommitELiberaUmaVez()
