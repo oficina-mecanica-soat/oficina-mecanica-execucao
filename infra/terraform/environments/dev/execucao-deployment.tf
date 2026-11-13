@@ -15,7 +15,10 @@ resource "kubernetes_deployment_v1" "execucao" {
 
     template {
       metadata {
-        labels = merge(local.labels, local.datadog_labels, { "admission.datadoghq.com/enabled" = "true" })
+        labels = merge(local.labels, local.datadog_labels, {
+          "admission.datadoghq.com/enabled" = "true"
+        })
+
         annotations = {
           "ad.datadoghq.com/execucao.logs"             = jsonencode([{ source = "csharp", service = "oficina-mecanica-execucao" }])
           "admission.datadoghq.com/dotnet-lib.version" = "3.50.0"
@@ -147,8 +150,10 @@ resource "kubernetes_deployment_v1" "execucao" {
 
   lifecycle {
     precondition {
-      condition = (!var.processamento_remoto_habilitado || var.os_entrada_queue_url ==
-      "https://sqs.${split(":", aws_sqs_queue.entrada.arn)[3]}.amazonaws.com/${data.aws_caller_identity.current.account_id}/oficina-mecanica-api-${var.environment}.fifo")
+      condition = (
+        !var.processamento_remoto_habilitado || var.os_entrada_queue_url ==
+        "https://sqs.${split(":", aws_sqs_queue.entrada.arn)[3]}.amazonaws.com/${data.aws_caller_identity.current.account_id}/oficina-mecanica-api-${var.environment}.fifo"
+      )
       error_message = "O modo remoto exige a entrada FIFO de OS do ambiente, conta e região do workload."
     }
   }
