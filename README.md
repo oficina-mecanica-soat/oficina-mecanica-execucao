@@ -8,7 +8,13 @@ Em `infra/terraform/environments/dev`, o workload segue a separação por respon
 
 Essa reorganização reaproveita integralmente os recursos existentes e preserva seus endereços Terraform, nomes físicos, dependências, configurações e contratos. Não exige migração de state nem acrescenta recursos. Laboratório offline em 13/11/2026, com deploy bloqueado; os registros de implantação abaixo são históricos. A integração desta mudança fica somente em `develop`, sem promoção para `release/main` nesta rodada.
 
-## Estado atual — runtime remoto implantado da F4-04
+## Retomada — 13/11/2026
+
+Laboratório offline e AWS bloqueada. A organização Terraform (#59), a promoção cumulativa (#60) e os controles transversais AUD-001/002/003/005 estão integrados em develop, com os limites e links no [plano de execução de Gabriel](docs/plano-execucao-gabriel.md). Não há nova implantação comprovada por esses ajustes. O bloqueio da promoção por Terraform ainda não implantado é esperado; manter integração somente em develop até autorização de Gabriel.
+
+O próximo aceite é a integração real com OS/Orçamento-Pagamento e a prova distribuída no Datadog. O plano identifica as dependências disponíveis, os cenários, o momento de solicitar laboratório e as evidências restantes. Resultados locais e as provas isoladas abaixo não concluem F4-10/F4-11. Reutilizar o código/contratos atuais; não antecipar tarefas da frente de Geovanna sem alinhamento.
+
+## Histórico — runtime remoto implantado da F4-04
 
 Em 12/11/2026, o laboratório foi reaberto em janela autorizada após o encerramento anterior. VPC, Kubernetes/Datadog, RDS, API e Execução foram retomados pelas esteiras. O [deploy do Execução 43318831037](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43318831037) concluiu, e os PRs #48/#49/#50 foram promovidos até `main`. Controle em `apply`, com deploy e processamento remoto habilitados nesta janela; isso não autoriza futuras janelas ou destroy. O estado abaixo é uma observação datada, não garantia de disponibilidade após reset do Academy.
 

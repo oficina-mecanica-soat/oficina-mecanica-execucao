@@ -2,7 +2,35 @@
 
 Revisão inicial em 10/11/2026; atualizações operacionais e de validação local em 11–12/11/2026 nas seções seguintes. Este plano detalha a execução do backlog existente e a exigência de uniformidade das esteiras. Não substitui decisões arquiteturais nem declara implementadas as etapas futuras. Merges são realizados por Gabriel; recursos AWS somente pelas esteiras, após aviso para criação do laboratório e atualização dos environments.
 
-## Situação atual — validação AWS retomada, 12/11/2026
+## Situação atual — retomada sem AWS, 13/11/2026
+
+Laboratório offline por informação de Gabriel. Os controles versionados permanecem em destroy após o encerramento e os gates AWS estão bloqueados; os relatos de implantação de 11–12/11 abaixo são históricos. Não restaurar apply nem reexecutar AWS como efeito da retomada. Integrar mudanças somente em develop; Gabriel realiza os merges e decide quando promover para release/main.
+
+| Frente | Entrega integrada e limite |
+| --- | --- |
+| Estrutura do Terraform | [Execução #59](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/pull/59): separação por responsabilidade seguindo a API, sem mudança de recursos/endereços. Ainda não implantada na nova janela. |
+| AUD-001 | Lambda #43, Gateway #38 e Kubernetes #76: caller/callee e entrada manual do Datadog bloqueados sem habilitação/ref/ambiente corretos; testes/CI aprovados. |
+| AUD-002 | RDS #53: conferência de consumidores antes do plano e da aplicação; destroy da janela anterior concluído. Guardrail deve executar novamente em cada futura operação. |
+| AUD-003 | API #375, Execução #60, VPC #59, RDS #55, Lambda #44, Gateway #39 e Kubernetes #77: promoção cumulativa protegida; testes/CI aprovados. |
+| AUD-005 | VPC #60, Kubernetes #78, Lambda #45 e Gateway #40: planos/pacote/cache por execução/tentativa, mantendo recuperação e salvamento do state. RDS já seguia o padrão. Sem prova de rerun AWS real neste ajuste. |
+| AUD-006/007 | Decimal corrigido no Execução #53; contrato de persistibilidade API #371 e proteção Execução #55. Testes/CI aprovados; produtor OS e integração dos três serviços ainda precisam de prova. |
+
+O erro na [promoção do Execução 43503737869](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43503737869) foi o bloqueio esperado: a mudança Terraform do #59 estava sem operação confirmada. Não afrouxar a guarda para liberar release durante o laboratório offline. Em uma nova tentativa operacional, repetir todos os jobs para gerar os artefatos do próprio run_attempt; não copiar/renomear planos antigos.
+
+### Próximo passo — integração F4-10 e observabilidade F4-11
+
+Na consulta de 13/11, a organização possui os sete repositórios conhecidos; oficina-mecanica-orcamento-pagamento não apareceu no acesso disponível. O [PR da API #369](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/pull/369) estava aberto e descrevia domínio/persistência da Saga, explicitamente sem ligação de produtores, consumidores ou rotas. Isso é uma dependência da frente de Geovanna, não autorização para Gabriel implementar essa frente ou simular sua conclusão. Confirmar links/branches atuais antes da integração; a observação pode mudar com novos PRs.
+
+1. Sem AWS: localizar as implementações de OS/Orçamento-Pagamento; comparar produtores/consumidores com RFC-0007, incluindo servicoId/servicoCatalogoId, versões, autorização sem início físico e identidade/hash/trace. Reutilizar os cenários locais e contratos já presentes no Execução, sem consultar bancos alheios.
+2. Preparar o fluxo integrado somente quando essas entradas reais estiverem disponíveis. Cobrir sucesso, recusa sem reserva parcial, cancelamento confirmado antes do início, disputa com início físico, duplicata/reinício e resultados tardios. Preservar a decisão manual do mecânico e distinguir finalização física, pagamento confirmado e entrega.
+3. F4-11: conferir configuração de logs/APM dos três serviços e dos Agents existentes. Demonstrar correlação por Saga/OS e trace nos comandos/resultados, inclusive outbox retomada após reinício; reunir painel de erros da Saga, DLQ e health. A instrumentação existente do Execução não comprova ingestão no Datadog. Não criar outro Agent/framework nem limites de alerta sem medição.
+4. Solicitar laboratório somente quando a preparação estiver pronta e a validação depender de SQS/DynamoDB/IAM/EKS, acesso público ou ingestão Datadog. Gabriel cria o laboratório e atualiza os environments; depois, conferir conta/state e dependências e abrir os PRs operacionais necessários. Não usar as credenciais de ontem como prova de acesso atual.
+5. Na janela autorizada: executar os cenários dos três serviços, a recuperação de payload corrigido da DLQ e as provas remotas ainda pendentes; guardar IDs, saldos/estados antes/depois, confirmação de commit/ACK, eventos e traces reais. O fluxo com Mercado Pago usa o provedor de teste real da frente responsável. Mocks, healthcheck isolado e recebimento na fila OS não substituem esse aceite.
+6. Após a prova, Gabriel decide as promoções develop → release → main, com conferência dos gates. Atualizar evidências e materiais F4-12/13/14 e encerrar o laboratório pelas esteiras, preservando dados/mensagens e deixando VPC por último. Reservar 16/11 para documentação/vídeo e 17/11 para conferência/envio, conforme o backlog.
+
+F4-04/F4-05 permanecem parciais quanto aos critérios remotos/corte integrado; F4-10/F4-11/F4-12 não estão concluídas. AUD-004 e AUD-008 seguem com Geovanna, conforme o backlog, sem transferência automática de ownership. AUD-009 a AUD-014 continuam fora do caminho crítico, salvo impedimento concreto da entrega.
+
+## Histórico — validação AWS retomada, 12/11/2026
 
 Após autorização de nova janela, as esteiras retomaram VPC, Kubernetes/Datadog, RDS, API e Execução. O [deploy 43318831037](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43318831037) e a promoção Execução #48/#49/#50 até `main` concluíram. Controle em `apply`, deploy e processamento remoto habilitados nesta janela; nenhum destroy executado nesta rodada. O estado é datado e depende da sessão Academy.
 
@@ -10,7 +38,7 @@ Verificador local excepcionalmente autorizado, isolado do Pod, validou reserva/d
 
 A prova seguinte gerou reserva/outbox com o caso de uso oficial pelo verificador, aplicou agendamento técnico e falha de transporte controlados, confirmou tentativa/erro persistidos, recriou somente o Pod e observou a mesma pendência antes do agendamento. O worker novo publicou o mesmo ID/corpo e gravou `ENVIADA`, preservando saldo 7/3. Não houve processo auxiliar no container, mudança de imagem, Terraform ou configuração. Isso comprova retomada pelo workload após recriação; não comprova indisponibilidade real do SQS ou geração inicial da pendência pelo Pod. O README registra IDs, workflows e limites de cada prova.
 
-Próximos passos: correções pontuais da triagem AUD após os testes, controles antes da operação afetada (incluindo AUD-002 antes de destroy RDS), integração com OS/Orçamento-Pagamento e evidências distribuídas. Não repetir a preparação do laboratório como se ainda estivesse encerrado. Não declarar F4-04/F4-10/F4-11 completas: não repetidos nesta janela renovação com falha/commit lento, cenário de payload corrigido da DLQ, Saga integrada e ingestão Datadog.
+Próximos passos: correções pontuais da triagem AUD após os testes, controles antes da operação afetada (incluindo AUD-002 antes de destroy RDS), integração com OS/Orçamento-Pagamento e evidências distribuídas. Esse registro se refere à janela de 12/11 e não autoriza reabrir o laboratório na retomada de 13/11. Não declarar F4-04/F4-10/F4-11 completas: não repetidos nesta janela renovação com falha/commit lento, cenário de payload corrigido da DLQ, Saga integrada e ingestão Datadog.
 
 ## Histórico — preparação local isolada anterior à reabertura, 12/11/2026
 
