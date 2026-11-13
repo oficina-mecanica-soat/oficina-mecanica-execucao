@@ -95,6 +95,100 @@ jobs:
           console.log('Estrutura existente preservada; nenhuma pasta de scripts versionada.');
           VALIDAR_ESTRUTURA
 
+      - name: "🧪 Validar promoção cumulativa sem AWS"
+        run: |
+          node <<'TESTAR_PROMOCAO_CUMULATIVA'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const os = require('node:os');
+          const cp = require('node:child_process');
+          const assert = require('node:assert/strict');
+          const workflow = fs.readFileSync('.github/workflows/cd-development.yml', 'utf8');
+          const bloco = workflow.match(/node <<'VALIDAR_PROMOCAO_CUMULATIVA'\r?\n([\s\S]*?)          VALIDAR_PROMOCAO_CUMULATIVA/);
+          assert(bloco, 'Guarda cumulativa ausente.');
+          const codigo = bloco[1].split(/\r?\n/).map(l => l.slice(10)).join('\n');
+          const validar = new Function(codigo.split('// Execução no runner:')[0] + '; return validarPromocao;')();
+          const detector = workflow.match(/node <<'DETECTAR_DEPLOY'\r?\n([\s\S]*?)          DETECTAR_DEPLOY/)[1].split(/\r?\n/).map(l => l.slice(10)).join('\n');
+          const caminhos = JSON.parse(workflow.match(/DEPLOYABLE_PATHS: >-\r?\n((?:    [^\n]*\r?\n)+)/)[1]);
+          const diretorio = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'promocao-cumulativa-'));
+          try {
+            const git = args => cp.execFileSync('git', args, { cwd: diretorio, encoding: 'utf8' }).trim();
+            git(['init', '-b', 'develop']);
+            git(['config', 'user.email', 'teste@example.invalid']);
+            git(['config', 'user.name', 'Teste local']);
+            const gravar = (nome, conteudo) => {
+              fs.mkdirSync(path.dirname(path.join(diretorio, nome)), { recursive: true });
+              fs.writeFileSync(path.join(diretorio, nome), conteudo);
+              git(['add', nome]);
+              git(['commit', '-m', 'cenário local']);
+              return git(['rev-parse', 'HEAD']);
+            };
+            const base = gravar('README.md', 'base');
+            const docs = gravar('README.md', 'documentação');
+            const consultarNunca = () => { throw new Error('Consulta inesperada.'); };
+            const opcoes = { git, caminhos, base, head: docs, consultar: consultarNunca };
+            assert.equal(validar(opcoes), 'SEM_ALTERACAO_IMPLANTAVEL');
+
+            git(['switch', '-c', 'feature/teste']);
+            gravar('src/Exemplo.cs', 'código');
+            git(['switch', 'develop']);
+            git(['merge', '--no-ff', 'feature/teste', '-m', 'merge funcional']);
+            const implantavel = git(['rev-parse', 'HEAD']);
+            const head = gravar('README.md', 'documentação depois do código');
+            const detectar = (antes, atual) => {
+              const saida = path.join(diretorio, 'saida-runner.txt');
+              fs.writeFileSync(saida, '');
+              cp.execFileSync(process.execPath, ['-e', detector], {
+                cwd: diretorio,
+                env: { ...process.env, DEPLOYABLE_PATHS: JSON.stringify(caminhos), GITHUB_BEFORE: antes, GITHUB_SHA: atual, GITHUB_OUTPUT: saida }
+              });
+              return fs.readFileSync(saida, 'utf8').trim();
+            };
+            assert.equal(detectar(base, implantavel), 'deploy_required=true');
+            assert.equal(detectar(implantavel, head), 'deploy_required=false');
+            let chamadas = [];
+            const run = { id: 123, run_attempt: 2, head_sha: implantavel, head_branch: 'develop', event: 'push', status: 'completed', conclusion: 'success' };
+            const job = { name: '☁️ 02 · Deploy em development / ☁️ 04 · Aplicar ou destruir infraestrutura', conclusion: 'success' };
+            const consultar = endpoint => {
+              chamadas.push(endpoint);
+              return endpoint.startsWith('actions/workflows/') ? [{ workflow_runs: [run] }] : [{ jobs: [job] }];
+            };
+            const comCodigo = { ...opcoes, head, consultar };
+            assert.throws(() => validar({ ...comCodigo, consultar: () => [{ workflow_runs: [] }] }), /sem CD/);
+            assert.equal(validar(comCodigo), 'OPERACAO_ANTERIOR_CONFIRMADA');
+            assert(chamadas[0].includes('head_sha=' + implantavel), 'Deve buscar o merge em develop, não o commit da feature/documentação.');
+            assert(chamadas[1].includes('/attempts/2/jobs'), 'Deve consultar a tentativa atual.');
+            for (const estado of ['skipped', 'failure', 'cancelled']) {
+              job.conclusion = estado;
+              assert.throws(() => validar(comCodigo), /sem aplicação/);
+            }
+            job.conclusion = 'success';
+            assert.throws(() => validar({ ...comCodigo, consultar: endpoint => endpoint.startsWith('actions/workflows/') ? [{ workflow_runs: [run] }] : [{}] }), /Jobs/);
+            assert.throws(() => validar({ ...comCodigo, consultar: endpoint => [{ workflow_runs: [{ ...run, head_sha: '0'.repeat(40) }] }] }), /sem CD/);
+            assert.throws(() => validar({ ...comCodigo, consultar: endpoint => [{ workflow_runs: [run, { ...run, id: 124, conclusion: 'failure' }] }] }), /sem CD/);
+            run.conclusion = 'failure';
+            assert.throws(() => validar(comCodigo), /sem CD/);
+            run.conclusion = 'success';
+            run.status = 'in_progress';
+            assert.throws(() => validar(comCodigo), /sem CD/);
+            run.status = 'completed';
+            assert.throws(() => validar({ ...comCodigo, consultar: consultarNunca }), /Consulta inesperada/);
+            assert.throws(() => validar({ ...comCodigo, consultar: () => ({}) }), /Histórico/);
+            assert.equal(validar({ ...comCodigo, consultar: consultarNunca, resultadoAtual: 'success', acaoAtual: 'apply' }), 'OPERACAO_ATUAL_CONFIRMADA');
+            assert.equal(validar({ ...comCodigo, consultar: consultarNunca, resultadoAtual: 'success', acaoAtual: 'destroy' }), 'OPERACAO_ATUAL_CONFIRMADA');
+            assert.throws(() => validar({ ...comCodigo, consultar: consultarNunca, resultadoAtual: 'skipped', acaoAtual: 'apply' }), /Consulta inesperada/);
+            gravar('src/Exemplo.cs', 'outro código ainda sem deploy');
+            const posterior = gravar('README.md', 'mais documentação');
+            assert.throws(() => validar({ ...comCodigo, head: posterior }), /sem CD/);
+            gravar('src/Exemplo.cs', 'código');
+            assert.equal(validar({ ...comCodigo, base: implantavel, head: git(['rev-parse', 'HEAD']), consultar: consultarNunca }), 'SEM_ALTERACAO_IMPLANTAVEL');
+            console.log('Promoção cumulativa: código sem deploy bloqueado; código implantado seguido de docs permitido; falhas, skips, reruns e novo código protegidos.');
+          } finally {
+            assert.equal(path.dirname(fs.realpathSync(diretorio)), fs.realpathSync(process.env.RUNNER_TEMP || os.tmpdir()));
+            fs.rmSync(diretorio, { recursive: true, force: true });
+          }
+          TESTAR_PROMOCAO_CUMULATIVA
+
       - name: "🔀 01 · Conferir origem e destino do PR"
         env:
           BASE_BRANCH: ${{ github.base_ref }}
