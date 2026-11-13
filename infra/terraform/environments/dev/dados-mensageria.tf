@@ -1,14 +1,3 @@
-locals {
-  execucao_resource_prefix = "oficina-mecanica-execucao-${var.environment}"
-  execucao_ssm_prefix      = "/oficina-mecanica/${var.environment}/execucao"
-  execucao_common_tags = {
-    Project     = "OficinaMecanica"
-    Environment = var.environment
-    ManagedBy   = "Terraform"
-    Repository  = "oficina-mecanica-execucao"
-  }
-}
-
 resource "aws_dynamodb_table" "execucao" {
   name         = local.execucao_resource_prefix
   billing_mode = "PAY_PER_REQUEST"
@@ -19,6 +8,7 @@ resource "aws_dynamodb_table" "execucao" {
     name = "PK"
     type = "S"
   }
+
   attribute {
     name = "SK"
     type = "S"
@@ -57,17 +47,6 @@ resource "aws_sqs_queue_redrive_allow_policy" "dlq" {
     redrivePermission = "byQueue"
     sourceQueueArns   = [aws_sqs_queue.entrada.arn]
   })
-}
-
-locals {
-  execucao_contracts = {
-    dynamodb_table_name = aws_dynamodb_table.execucao.name
-    dynamodb_table_arn  = aws_dynamodb_table.execucao.arn
-    entrada_queue_url   = aws_sqs_queue.entrada.url
-    entrada_queue_arn   = aws_sqs_queue.entrada.arn
-    dlq_url             = aws_sqs_queue.dlq.url
-    dlq_arn             = aws_sqs_queue.dlq.arn
-  }
 }
 
 resource "aws_ssm_parameter" "execucao" {
