@@ -27,6 +27,7 @@ jobs:
       ci_required: ${{ steps.detect.outputs.ci_required }}
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
         with:
@@ -70,10 +71,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: "📥 Conferir estrutura do repositório"
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
       - name: "📁 Bloquear pastas extras e diretórios de scripts"
         run: |
           node <<'VALIDAR_ESTRUTURA'
@@ -244,6 +247,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
 
@@ -273,6 +277,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
 
@@ -294,6 +299,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
 
@@ -322,7 +328,7 @@ jobs:
           --configuration Release
           --no-build
           --collect:"XPlat Code Coverage"
-          --settings tests/coverage.runsettings
+          --settings tests/sonarqube.runsettings
           --results-directory ./TestResults
           --logger "trx"
 
@@ -402,6 +408,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
 
@@ -441,6 +448,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
 
@@ -461,10 +469,15 @@ jobs:
     if: needs.detect_ci_scope.outputs.ci_required == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v5
+
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🛠️ 02 · Instalar SDK do .NET"
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
+
       - name: "🧪 Validar adaptador temporário de inspeção da DLQ"
         run: |
           node <<'TESTAR_ADAPTADOR_DLQ'
@@ -487,10 +500,13 @@ jobs:
           const invalido=executar({...mensagem,versao:2});assert.notEqual(invalido.status,0);assert.equal(invalido.stdout,'');
           assert(!invalido.stderr.includes(id));console.log('Adaptador usa a aplicação e não expõe corpo em falhas.');
           TESTAR_ADAPTADOR_DLQ
-      - uses: hashicorp/setup-terraform@v4
+
+      - name: "🛠️ 03 · Instalar Terraform"
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.15.8"
           terraform_wrapper: false
+
       - name: "🧪 Validar recuperação segura de destroy"
         run: |
           node <<'PREPARAR_TESTES_INLINE'
@@ -813,10 +829,16 @@ jobs:
           TESTE_INLINE_DLQ
           node --test "$RUNNER_TEMP/bootstrap-account-state.test.cjs" "$RUNNER_TEMP/contratos-execucao.test.cjs" "$RUNNER_TEMP/infra-execucao.test.cjs" "$RUNNER_TEMP/prepare-destroy.test.cjs" "$RUNNER_TEMP/operacao-dlq.test.cjs"
 
-      - run: terraform fmt -check -recursive infra/terraform
-      - run: terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
-      - run: terraform -chdir=infra/terraform/environments/dev validate
-      - name: "🧪 Validar contratos Terraform com providers simulados"
+      - name: "🎨 04 · Verificar formatação Terraform"
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: "🚀 05 · Inicializar Terraform sem backend"
+        run: terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
+
+      - name: "🔍 06 · Validar configuração Terraform"
+        run: terraform -chdir=infra/terraform/environments/dev validate
+
+      - name: "🧪 07 · Validar contratos Terraform com providers simulados"
         run: terraform -chdir=infra/terraform/environments/dev test
 
   quality_gate:
@@ -834,6 +856,7 @@ jobs:
     if: always()
 
     steps:
+
       - name: "🚦 01 · Conferir status de todos os jobs do CI"
         run: |
           if [ "${{ needs.detect_ci_scope.result }}" != "success" ]; then
