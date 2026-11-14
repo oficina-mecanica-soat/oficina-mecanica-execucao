@@ -16,6 +16,83 @@ namespace OficinaMecanica.Execucao.Infrastructure.IntegrationTests;
 public sealed class PreparacaoPersistenteTests(DynamoDbFixture fixture) : IClassFixture<DynamoDbFixture>
 {
     [Theory]
+    [InlineData(10, "ExecucaoPreparada", 7, 3)]
+    [InlineData(2, "PreparacaoRecusada", 2, 0)]
+    public async Task Dado_ComandoRealDaOs_Quando_ReentregarAposRecriarProcessador_Entao_PreservaSaldoResultadoEIdentidades(
+        int quantidadeInicial, string tipoResultado, int disponivel, int reservada)
+    {
+        // JSON capturado do SolicitarPreparacaoOrdemServicoUseCase da API (2546e31),
+        // com SQL real e dados sintéticos. Não gerar este contrato pelo DTO consumidor.
+        const string json = """
+            {
+              "mensagemId": "01a1da92-15c9-72af-abd5-8720859908c2",
+              "tipo": "PrepararExecucao",
+              "versao": 1,
+              "sagaId": "9fd7bd53-3ac2-4a5d-bc0e-e2718967e68a",
+              "ordemServicoId": "e0d0094a-a5b8-437a-847e-fd8e991305ab",
+              "correlationId": "integracao-local-aprovacao",
+              "causationId": "cfe7f34a-77b9-4713-83bb-219d4198baa2",
+              "ocorridoEm": "2026-11-14T14:59:29.3539213+00:00",
+              "dados": {
+                "versao": 1,
+                "filialId": "db58d375-7637-4136-b428-922865a93990",
+                "veiculoId": "26658ca5-5c4f-4c8c-9c72-c61735ba113f",
+                "mecanicoId": "c04b83ca-1514-4573-8115-57c2eac07c43",
+                "itens": [
+                  {
+                    "itemId": "da263e59-7c0b-48ce-afae-024c45e2c13e",
+                    "quantidade": 3
+                  }
+                ],
+                "servicos": [
+                  {
+                    "servicoId": "81cc02c8-d498-4c5b-8d54-37a8ea39639b",
+                    "servicoCatalogoId": "0ded7995-ce06-495f-8adc-3e62833c8d98",
+                    "descricao": "Troca de \u00F3leo",
+                    "valor": 150.00
+                  }
+                ]
+              }
+            }
+            """;
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        var comando = JsonContrato.Ler<Mensagem>(json);
+        var dados = JsonContrato.Ler<PrepararExecucao>(comando.Dados.GetRawText());
+        var item = Assert.Single(dados.Itens);
+        await cenario.SemearAsync(quantidadeInicial, item.ItemId, dados.FilialId);
+
+        var primeiro = await cenario.Processador.ProcessarAsync(json);
+        var reiniciado = CenarioPreparacao.CriarProcessador(cenario.Armazenamento, cenario.Relogio);
+        var repetido = await reiniciado.ProcessarAsync(JsonContrato.Serializar(comando with { MensagemId = Guid.NewGuid() }));
+
+        Assert.NotNull(primeiro);
+        Assert.NotNull(repetido);
+        Assert.Equal(tipoResultado, primeiro.Tipo);
+        Assert.Equal(JsonContrato.Serializar(primeiro), JsonContrato.Serializar(repetido));
+        Assert.Equal(comando.MensagemId, primeiro.CausationId);
+        Assert.Equal(comando.SagaId, primeiro.SagaId);
+        Assert.Equal(comando.CorrelationId, primeiro.CorrelationId);
+        var saldo = (await cenario.Armazenamento.ObterAsync(ChavesExecucao.Estoque(dados.FilialId, item.ItemId), default)).Ler<SaldoEstoque>()!;
+        Assert.Equal(disponivel, saldo.Disponivel);
+        Assert.Equal(reservada, saldo.Reservada);
+        var sequencia = (await cenario.Armazenamento.ObterAsync(ChavesExecucao.SequenciaOutbox, default)).Ler<SequenciaOutbox>()!;
+        Assert.Equal(1, sequencia.Valor);
+        if (tipoResultado == "ExecucaoPreparada")
+        {
+            var preparada = JsonContrato.Ler<ExecucaoPreparada>(primeiro.Dados.GetRawText());
+            var servico = Assert.Single(preparada.Diagnostico.Servicos);
+            Assert.Equal(Guid.Parse("81cc02c8-d498-4c5b-8d54-37a8ea39639b"), servico.ServicoId);
+            Assert.Equal(Guid.Parse("0ded7995-ce06-495f-8adc-3e62833c8d98"), servico.ServicoCatalogoId);
+            Assert.Equal(150m, servico.Valor);
+            Assert.Equal("Troca de óleo", servico.Descricao);
+        }
+        else
+        {
+            Assert.Equal("ESTOQUE_INSUFICIENTE", primeiro.Dados.GetProperty("codigoMotivo").GetString());
+        }
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(1000)]
     public async Task Dado_OutboxProximaDoLimite_Quando_Registrar_Entao_ReservaEspacoParaLeaseEBackoff(int margem)
