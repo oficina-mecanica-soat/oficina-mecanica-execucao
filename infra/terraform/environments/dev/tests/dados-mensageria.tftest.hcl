@@ -51,6 +51,25 @@ run "contrato_dynamodb_compativel_com_repositorio" {
   }
 }
 
+run "service_usa_ingresso_privado_contratual" {
+  command = plan
+  assert {
+    condition = (
+      kubernetes_service_v1.execucao.spec[0].type == "NodePort" &&
+      kubernetes_service_v1.execucao.spec[0].port[0].name == "http" &&
+      kubernetes_service_v1.execucao.spec[0].port[0].node_port == 30081 &&
+      kubernetes_service_v1.execucao.spec[0].port[0].target_port == "8080"
+    )
+    error_message = "Service deve seguir o ingresso privado aprovado, preservando a porta HTTP da aplicação."
+  }
+}
+
+run "porta_de_outro_servico_e_recusada" {
+  command = plan
+  variables { node_port = 30080 }
+  expect_failures = [var.node_port]
+}
+
 run "parametros_fifo_e_compensacao_conforme_rfc" {
   command = plan
   assert {

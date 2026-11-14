@@ -419,6 +419,7 @@ jobs:
               throw new Error('Ambiente SSM ausente ou inválido; operação bloqueada.');
             const dir = env.TF_WORKING_DIRECTORY;
             const aws = consultarAws || ((...args) => cp.execFileSync('aws', [...args, '--region', env.AWS_REGION, '--output', 'text'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
+            let nodePort = 30081;
             let cluster = '';
             let imagem = `destroy-only:sha-${'0'.repeat(40)}`;
             let jwt = { jwt_secret: 'destroy-only-placeholder-000000000000', jwt_issuer: 'destroy-only', jwt_audience: 'destroy-only' };
@@ -431,6 +432,8 @@ jobs:
               const prefix = `/oficina-mecanica/${env.SSM_ENVIRONMENT_NAME}`;
               const parameter = suffix => aws('ssm', 'get-parameter', '--name', `${prefix}/${suffix}`, '--query', 'Parameter.Value');
               if (parameter('status/kubernetes') !== 'ready') throw new Error('Infraestrutura Kubernetes ainda não está ready.');
+              nodePort = Number(parameter('kubernetes/execucao_internal_node_port'));
+              if (nodePort !== 30081) throw new Error('NodePort de Execução diverge do contrato de ingresso privado.');
               cluster = parameter('kubernetes/cluster_name');
               if (!cluster || cluster === 'None') throw new Error('Contrato SSM de cluster ausente.');
               const nome = parameter('kubernetes/execucao_ecr_repository_name');
@@ -452,7 +455,7 @@ jobs:
               const arquivo = path.join(dir, 'terraform.tfstate');
               if (fs.existsSync(arquivo)) cluster = clusterDoState(JSON.parse(fs.readFileSync(arquivo, 'utf8')));
             } else throw new Error('Ação Terraform inválida.');
-            const vars = { environment: env.SSM_ENVIRONMENT_NAME, ...jwt, ...remoto, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
+            const vars = { node_port: nodePort, environment: env.SSM_ENVIRONMENT_NAME, ...jwt, ...remoto, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
             fs.writeFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), JSON.stringify(vars), { mode: 0o600 });
             fs.appendFileSync(env.GITHUB_OUTPUT, `ecr_image_uri=${imagem}\neks_cluster_name=${cluster}\n`);
           }
@@ -461,6 +464,10 @@ jobs:
             try { main(); } catch { console.error('Preparação do ambiente falhou; contratos, permissões e state devem ser conferidos. Nenhum valor sensível foi registrado.'); process.exit(1); }
           }
           VALIDACAO_INLINE_1
+
+      - &validacoes_recuperacao
+        name: "🛡️ Preparar validações de recuperação e infraestrutura"
+        run: |
           cat > "$RUNNER_TEMP/prepare-destroy.cjs" <<'VALIDACAO_INLINE_2'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -875,6 +882,7 @@ jobs:
             execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
 
       - *validacoes_inline
+      - *validacoes_recuperacao
 
       - name: "🛡️ Validar state da conta AWS atual"
         run: node "$RUNNER_TEMP/bootstrap-account-state.cjs"

@@ -4,6 +4,16 @@ variable "processamento_remoto_habilitado" {
   description = "Ativação explícita do runtime acadêmico; exige janela autorizada e contrato da entrada de OS."
 }
 
+variable "node_port" {
+  type        = number
+  default     = 30081
+  description = "Porta exclusiva do ingresso privado, obtida do contrato Kubernetes pela esteira."
+  validation {
+    condition     = var.node_port == 30081
+    error_message = "Execução deve usar o NodePort contratual 30081, sem colisão com API ou Orçamento/Pagamento."
+  }
+}
+
 variable "os_entrada_queue_url" {
   type        = string
   default     = ""

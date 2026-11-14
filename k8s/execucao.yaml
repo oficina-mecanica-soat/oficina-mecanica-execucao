@@ -76,9 +76,12 @@ kind: Service
 metadata:
   name: oficina-mecanica-execucao
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: oficina-mecanica-execucao
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 8080
+      protocol: TCP
+      nodePort: 30081
