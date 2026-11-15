@@ -245,7 +245,7 @@ jobs:
       - name: "💾 Guardar backup cifrado independente do cache"
         uses: actions/upload-artifact@v7
         with:
-          name: state-legado-${{ matrix.id }}-${{ github.run_id }}
+          name: state-legado-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/legacy-state.bundle.enc
           retention-days: 90
           if-no-files-found: error
@@ -260,7 +260,7 @@ jobs:
       - name: "⬇️ Baixar backup para conferir a restauração"
         uses: actions/download-artifact@v8
         with:
-          name: state-legado-${{ matrix.id }}-${{ github.run_id }}
+          name: state-legado-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/restaurado/${{ matrix.id }}
       - name: "🧹 Limpar apenas a cópia local antes da prova do cache"
         if: matrix.active
