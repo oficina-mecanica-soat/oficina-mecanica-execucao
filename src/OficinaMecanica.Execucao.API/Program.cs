@@ -26,6 +26,7 @@ builder.Services.AddOptions<JwtOptions>()
     .ValidateOnStart();
 
 builder.Services.AddHealthChecks();
+builder.Services.AddApiSwagger();
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
@@ -78,9 +79,10 @@ using var clientesAws = await builder.AddApiProcessingAsync();
 var app = builder.Build();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<GlobalExceptionMiddleware>();
+app.UseApiSwagger();
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapHealthChecks("/api/health").AllowAnonymous();
+app.MapHealthChecks("/api/health").AllowAnonymous().WithName("HealthCheck").WithTags("Health");
 app.MapControllers();
 await app.RunAsync();
 
