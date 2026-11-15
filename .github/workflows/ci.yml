@@ -835,6 +835,238 @@ jobs:
           TESTE_INLINE_DLQ
           node --test "$RUNNER_TEMP/bootstrap-account-state.test.cjs" "$RUNNER_TEMP/contratos-execucao.test.cjs" "$RUNNER_TEMP/infra-execucao.test.cjs" "$RUNNER_TEMP/prepare-destroy.test.cjs" "$RUNNER_TEMP/operacao-dlq.test.cjs"
 
+      - name: "🔐 Testar migração e preservação dos snapshots"
+        run: |
+          node <<'TESTAR_MIGRACAO_ESTADOS'
+          const fs = require('node:fs'),
+            path = require('node:path'),
+            os = require('node:os'),
+            crypto = require('node:crypto'),
+            assert = require('node:assert/strict'),
+            Module = require('node:module'),
+            cp = require('node:child_process');
+          const workflow = fs.readFileSync('.github/workflows/proteger-states-legados.yml', 'utf8').replace(/\r/g, '');
+          const bloco = workflow.match(
+            /          cat > "\$RUNNER_TEMP\/migrar-cache-legado.cjs" <<'MIGRAR_CACHE_LEGADO'\n([\s\S]*?)          MIGRAR_CACHE_LEGADO/
+          );
+          assert(bloco);
+          const codigo = bloco[1]
+            .split('\n')
+            .map((l) => l.slice(10))
+            .join('\n');
+          const arquivo = path.join(process.cwd(), 'migracao-teste.cjs'),
+            m = new Module(arquivo);
+          m.paths = module.paths;
+          m._compile(codigo, arquivo);
+          const h = m.exports;
+          const repo = 'oficina-mecanica-soat/' + path.basename(process.cwd());
+          const prefix = repo.endsWith('execucao')
+            ? 'execucao-tfstate-'
+            : repo.endsWith('auth-lambda')
+              ? 'tfstate-auth-lambda-'
+              : 'tfstate-';
+          const cache = (id, key, ref = 'refs/heads/develop') => ({
+            id,
+            key,
+            ref,
+            created_at: `2026-11-${String(id).padStart(2, '0')}T00:00:00Z`
+          });
+          const antigo = cache(1, prefix + '123456789012-development-100-1');
+          const atual = cache(2, prefix + '123456789012-development-101-1');
+          const legado = cache(3, prefix + 'development-90-1');
+          let selecao = h.selecionar(
+            [
+              antigo,
+              atual,
+              legado,
+              cache(4, 'Linux-nuget'),
+              cache(5, prefix + '123456789012-development-102-1', 'refs/pull/1/merge')
+            ],
+            [],
+            repo
+          );
+          assert.equal(selecao.length, 3);
+          assert.deepEqual(
+            selecao.filter((c) => c.active).map((c) => c.id),
+            [2]
+          );
+          assert(
+            h
+              .selecionar(
+                [antigo, atual],
+                [{ ref: 'refs/heads/develop', key: 'tfstate-enc-v1-123456789012-development-200-1' }],
+                repo
+              )
+              .every((c) => !c.active)
+          );
+          assert.throws(() => h.selecionar([cache(-1, atual.key)], [], repo));
+          assert.throws(() => h.selecionar([], [], 'outro/' + repo.split('/')[1]));
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oficina-migracao-segura-'));
+          const originalExec = cp.execFileSync;
+          try {
+            const tf = path.join(dir, 'tf'),
+              temporario = path.join(dir, 'runner');
+            fs.mkdirSync(tf);
+            fs.mkdirSync(temporario);
+            const env = {
+              GITHUB_REPOSITORY: repo,
+              TF_WORKING_DIRECTORY: tf,
+              RUNNER_TEMP: temporario,
+              TERRAFORM_STATE_KEY: crypto.randomBytes(32).toString('hex'),
+              AWS_ACCOUNT_ID: '123456789012',
+              SSM_ENVIRONMENT_NAME: 'development',
+              LEGACY_ID: '2',
+              LEGACY_KEY: atual.key,
+              ATIVAR_CACHE: 'true'
+            };
+            const bytes = JSON.stringify({ version: 4, resources: [], teste: 'segredo-sintetico-sem-valor-real' });
+            fs.writeFileSync(path.join(tf, 'terraform.tfstate'), bytes);
+            fs.writeFileSync(path.join(tf, 'terraform.tfstate.backup'), bytes + '\n');
+            const comandos = [];
+            cp.execFileSync = (cmd, args) => {
+              assert.equal(cmd, 'gh');
+              comandos.push(args);
+              if (args.includes('DELETE')) return '';
+              return JSON.stringify([{ actions_caches: [atual] }]);
+            };
+            assert.throws(() => h.main('cleanup', env));
+            assert.equal(comandos.length, 0);
+            h.main('seal', env);
+            const cifrado = fs.readFileSync(path.join(temporario, 'legacy-state.bundle.enc'));
+            assert(!cifrado.toString().includes('segredo-sintetico'));
+            const remoto = {};
+            for (const n of ['terraform.tfstate.enc', 'terraform.tfstate.backup.enc'])
+              remoto[n] = fs.readFileSync(path.join(tf, n));
+            const backup = path.join(temporario, 'restaurado', '2');
+            fs.mkdirSync(backup, { recursive: true });
+            fs.writeFileSync(path.join(backup, 'legacy-state.bundle.enc'), cifrado);
+            h.main('clear-local', env);
+            assert(!fs.existsSync(path.join(tf, 'terraform.tfstate')));
+            assert.throws(() => h.main('verify', env));
+            assert.equal(comandos.length, 0);
+            for (const [n, b] of Object.entries(remoto)) fs.writeFileSync(path.join(tf, n), b);
+            h.main('verify', env);
+            assert.equal(fs.readFileSync(path.join(tf, 'terraform.tfstate'), 'utf8'), bytes);
+            h.main('cleanup', env);
+            assert.equal(comandos.filter((c) => c.includes('DELETE')).length, 1);
+            assert(comandos.at(-1).at(-1).endsWith('/actions/caches/2'));
+            assert.throws(() =>
+              h.main('verify', { ...env, TERRAFORM_STATE_KEY: crypto.randomBytes(32).toString('hex') })
+            );
+          } finally {
+            cp.execFileSync = originalExec;
+            assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir()) + path.sep + 'oficina-migracao-segura-'));
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+          assert(workflow.indexOf('Conferir backup e snapshot') < workflow.indexOf('Remover apenas o cache legado'));
+          assert(workflow.includes('retention-days: 90'));
+          assert(!/configure-aws-credentials|terraform apply|terraform destroy|kubectl apply/.test(workflow));
+          console.log(
+            'Migração real: seleção do snapshot, ausência de adoção do legado, backup/restore exato e remoção condicionada aprovados; nenhuma chamada remota.'
+          );
+          TESTAR_MIGRACAO_ESTADOS
+
+      - name: "🔐 Testar proteção real de states e planos"
+        run: |
+          node <<'TESTAR_PROTECAO_ESTADOS'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const os = require('node:os');
+          const crypto = require('node:crypto');
+          const assert = require('node:assert/strict');
+          const Module = require('node:module');
+          const origem = fs.readFileSync('.github/workflows/aws-deploy.yml', 'utf8').replace(/\r/g, '');
+          const bloco = origem.match(
+            /          cat > "\$RUNNER_TEMP\/proteger-estados.cjs" <<'PROTEGER_ESTADOS'\n([\s\S]*?)          PROTEGER_ESTADOS/
+          );
+          assert(bloco, 'Proteção literal ausente.');
+          const codigo = bloco[1]
+            .split('\n')
+            .map((l) => l.slice(10))
+            .join('\n');
+          const modulo = new Module(path.join(process.cwd(), 'protecao-temporaria.cjs'));
+          modulo.paths = module.paths;
+          modulo._compile(codigo, path.join(process.cwd(), 'protecao-temporaria.cjs'));
+          const p = modulo.exports;
+          const repo = 'oficina-mecanica-soat/' + path.basename(process.cwd());
+          const chave = crypto.randomBytes(32).toString('hex');
+          const env = {
+            AWS_REGION: 'us-east-1',
+            GITHUB_REPOSITORY: repo,
+            AWS_ACCOUNT_ID: '123456789012',
+            SSM_ENVIRONMENT_NAME: 'development',
+            GITHUB_RUN_ID: '123',
+            GITHUB_RUN_ATTEMPT: '1',
+            GITHUB_SHA: 'a'.repeat(40),
+            TERRAFORM_ACTION: 'apply',
+            TERRAFORM_STATE_KEY: chave
+          };
+          const key = p.chave(chave),
+            segredo = 'segredo-sintetico-nao-real';
+          const aad = p.contexto(env, 'plan');
+          const cifrado = p.selar(Buffer.from(segredo), key, aad);
+          assert(!cifrado.includes(segredo));
+          assert.equal(p.abrir(cifrado, key, aad).toString(), segredo);
+          for (const alteracao of [
+            { GITHUB_REPOSITORY: 'oficina-mecanica-soat/outro' },
+            { AWS_ACCOUNT_ID: '999999999999' },
+            { GITHUB_RUN_ID: '124' },
+            { GITHUB_RUN_ATTEMPT: '2' },
+            { GITHUB_SHA: 'b'.repeat(40) },
+            { TERRAFORM_ACTION: 'destroy' },
+            { AWS_REGION: 'us-west-2' }
+          ]) {
+            assert.throws(() => p.abrir(cifrado, key, p.contexto({ ...env, ...alteracao }, 'plan')));
+          }
+          assert.throws(() => p.abrir(cifrado, crypto.randomBytes(32), aad));
+          const adulterado = JSON.parse(cifrado);
+          adulterado.dados = Buffer.from('adulterado').toString('base64');
+          assert.throws(() => p.abrir(JSON.stringify(adulterado), key, aad));
+          for (const invalida of ['', 'a'.repeat(63), 'g'.repeat(64)]) assert.throws(() => p.chave(invalida));
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oficina-protecao-estados-'));
+          try {
+            const ambiente = { ...env, TF_WORKING_DIRECTORY: dir };
+            const estado = JSON.stringify({
+              version: 4,
+              serial: 2,
+              lineage: 'somente-teste',
+              outputs: {},
+              resources: [],
+              teste: segredo
+            });
+            fs.writeFileSync(path.join(dir, 'terraform.tfstate'), estado);
+            p.main('state-seal', ambiente);
+            assert(!fs.readFileSync(path.join(dir, 'terraform.tfstate.enc'), 'utf8').includes(segredo));
+            assert.throws(() => p.main('state-open', ambiente));
+            fs.unlinkSync(path.join(dir, 'terraform.tfstate'));
+            p.main('state-open', ambiente);
+            assert.equal(fs.readFileSync(path.join(dir, 'terraform.tfstate'), 'utf8'), estado);
+            fs.writeFileSync(path.join(dir, 'tfplan'), Buffer.from([0, 1, 2, 3, 255]));
+            fs.writeFileSync(path.join(dir, 'execucao-destroy-context.json'), '{}');
+            p.main('plan-seal', ambiente);
+            fs.unlinkSync(path.join(dir, 'tfplan'));
+            p.main('plan-open', ambiente);
+            assert.deepEqual(fs.readFileSync(path.join(dir, 'tfplan')), Buffer.from([0, 1, 2, 3, 255]));
+            assert.throws(() => p.main('plan-open', { ...ambiente, GITHUB_RUN_ATTEMPT: '2' }));
+          } finally {
+            assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir()) + path.sep + 'oficina-protecao-estados-'));
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+          const steps = origem.split(/^      - /m).slice(1);
+          for (const step of steps.filter((s) => /uses: actions\/cache\/(restore|save)@/.test(s))) {
+            assert(step.includes('tfstate-enc-v1-'));
+            assert(!/\/terraform\.tfstate(?:\.backup)?\n/.test(step));
+            if (step.includes('cache/save')) assert(/outcome == 'success'/.test(step));
+          }
+          for (const step of steps.filter(
+            (s) => s.includes('uses: actions/upload-artifact@') && /name: tfplan-/.test(s)
+          ))
+            assert(step.includes('/tfplan.bundle.enc'));
+          console.log(
+            'Proteção real: roundtrip, sigilo, adulteração, chave/escopo/tentativa/ação e fronteiras de publicação aprovados.'
+          );
+          TESTAR_PROTECAO_ESTADOS
+
       - name: "🎨 04 · Verificar formatação Terraform"
         run: terraform fmt -check -recursive infra/terraform
 

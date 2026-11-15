@@ -277,6 +277,7 @@ jobs:
       eks_cluster_name: ${{ steps.platform.outputs.eks_cluster_name }}
       account_id: ${{ steps.aws_credentials.outputs.aws-account-id }}
     env:
+      TERRAFORM_STATE_KEY: ${{ secrets.TERRAFORM_STATE_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
     steps:
@@ -305,15 +306,138 @@ jobs:
       - name: "🛠️ 04 · Instalar kubectl"
         uses: azure/setup-kubectl@v5
 
+      - &protecao_artefatos
+        name: "🔐 Preparar proteção de states e planos"
+        run: |
+          cat > "$RUNNER_TEMP/proteger-estados.cjs" <<'PROTEGER_ESTADOS'
+          'use strict';
+          const fs = require('node:fs'),
+            path = require('node:path'),
+            crypto = require('node:crypto');
+          const stateFiles = ['terraform.tfstate', 'terraform.tfstate.backup'];
+          const planFiles = [
+            'tfplan',
+            'partial_destroy_override.tf',
+            'os-mensageria-destroy-context.json',
+            'execucao-destroy-context.json'
+          ];
+          function chave(valor) {
+            if (!/^[a-f0-9]{64}$/.test(valor || '')) throw Error('Chave protegida de 256 bits ausente.');
+            return Buffer.from(valor, 'hex');
+          }
+          function contexto(env, alvo) {
+            if (
+              !/^\d{12}$/.test(env.AWS_ACCOUNT_ID || '') ||
+              env.SSM_ENVIRONMENT_NAME !== 'development' ||
+              !/^oficina-mecanica-soat\/oficina-mecanica-(api|execucao|auth-lambda)$/.test(env.GITHUB_REPOSITORY || '')
+            )
+              throw Error('Escopo protegido inválido.');
+            let c = [env.GITHUB_REPOSITORY, env.AWS_ACCOUNT_ID, env.SSM_ENVIRONMENT_NAME, alvo];
+            if (alvo === 'plan') {
+              if (
+                !/^[a-z]{2}-[a-z]+-\d+$/.test(env.AWS_REGION || '') ||
+                !['apply', 'destroy'].includes(env.TERRAFORM_ACTION) ||
+                !/^\d+$/.test(env.GITHUB_RUN_ID || '') ||
+                !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT || '') ||
+                !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA || '')
+              )
+                throw Error('Tentativa protegida inválida.');
+              c.push(env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT, env.GITHUB_SHA, env.TERRAFORM_ACTION, env.AWS_REGION);
+            }
+            return c.join('|');
+          }
+          function selar(bytes, key, aad) {
+            const iv = crypto.randomBytes(12),
+              c = crypto.createCipheriv('aes-256-gcm', key, iv);
+            c.setAAD(Buffer.from(aad));
+            const data = Buffer.concat([c.update(bytes), c.final()]);
+            return JSON.stringify({
+              versao: 1,
+              iv: iv.toString('base64'),
+              tag: c.getAuthTag().toString('base64'),
+              dados: data.toString('base64')
+            });
+          }
+          function abrir(serializado, key, aad) {
+            const e = JSON.parse(serializado);
+            if (e.versao !== 1 || Object.keys(e).sort().join(',') !== 'dados,iv,tag,versao')
+              throw Error('Envelope protegido inválido.');
+            const iv = Buffer.from(e.iv, 'base64'),
+              tag = Buffer.from(e.tag, 'base64');
+            if (iv.length !== 12 || tag.length !== 16) throw Error('Autenticação inválida.');
+            const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
+            d.setAAD(Buffer.from(aad));
+            d.setAuthTag(tag);
+            return Buffer.concat([d.update(Buffer.from(e.dados, 'base64')), d.final()]);
+          }
+          function main(modo, env = process.env) {
+            const dir = env.TF_WORKING_DIRECTORY,
+              key = chave(env.TERRAFORM_STATE_KEY);
+            if (!dir) throw Error('Diretório protegido ausente.');
+            if (modo === 'state-open' || modo === 'state-seal') {
+              const aad = contexto(env, 'state');
+              for (const nome of stateFiles) {
+                const raw = path.join(dir, nome),
+                  enc = raw + '.enc';
+                if (modo === 'state-open') {
+                  if (fs.existsSync(raw)) throw Error('State plaintext inesperado antes de restaurar.');
+                  if (fs.existsSync(enc))
+                    fs.writeFileSync(raw, abrir(fs.readFileSync(enc, 'utf8'), key, aad + '|' + nome), { mode: 0o600 });
+                } else if (fs.existsSync(raw))
+                  fs.writeFileSync(enc, selar(fs.readFileSync(raw), key, aad + '|' + nome), { mode: 0o600 });
+              }
+              return;
+            }
+            const bundle = path.join(dir, 'tfplan.bundle.enc'),
+              aad = contexto(env, 'plan');
+            if (modo === 'plan-seal') {
+              const arquivos = {};
+              for (const nome of planFiles) {
+                const f = path.join(dir, nome);
+                if (fs.existsSync(f)) arquivos[nome] = fs.readFileSync(f).toString('base64');
+              }
+              for (const nome of planFiles.slice(0, 1))
+                if (!arquivos[nome]) throw Error('Plano obrigatório incompleto.');
+              fs.writeFileSync(bundle, selar(Buffer.from(JSON.stringify(arquivos)), key, aad), { mode: 0o600 });
+            } else if (modo === 'plan-open') {
+              const arquivos = JSON.parse(abrir(fs.readFileSync(bundle, 'utf8'), key, aad));
+              if (!arquivos || Array.isArray(arquivos) || Object.keys(arquivos).some((n) => !planFiles.includes(n)))
+                throw Error('Pacote tenta gravar arquivo fora do plano.');
+              for (const nome of planFiles.slice(0, 1))
+                if (typeof arquivos[nome] !== 'string' || !arquivos[nome]) throw Error('Plano obrigatório ausente.');
+              for (const [nome, dados] of Object.entries(arquivos)) {
+                if (typeof dados !== 'string') throw Error('Conteúdo inválido.');
+                fs.writeFileSync(path.join(dir, nome), Buffer.from(dados, 'base64'), { mode: 0o600 });
+              }
+            } else throw Error('Operação protegida desconhecida.');
+          }
+          module.exports = { chave, contexto, selar, abrir, main };
+          if (require.main === module) {
+            try {
+              main(process.argv[2]);
+              console.log('Artefatos protegidos: ' + process.argv[2] + '.');
+            } catch {
+              console.error('Proteção dos artefatos falhou; não publicar nem substituir state.');
+              process.exit(1);
+            }
+          }
+          PROTEGER_ESTADOS
+
       - name: "📦 05 · Restaurar cache do state do Terraform"
         uses: actions/cache/restore@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+            tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+
+      - name: "🔓 Restaurar state autenticado"
+        id: restaurar_state_protegido
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-open
 
       - &validacoes_inline
         name: "🛡️ Preparar validações definidas no workflow"
@@ -718,14 +842,21 @@ jobs:
           terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
           terraform -chdir="$TF_WORKING_DIRECTORY" validate
 
+      - name: "🔐 Cifrar state inclusive após falha parcial"
+        id: cifrar_state_0
+        if: always() && steps.restaurar_state_protegido.outcome == 'success'
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-seal
+
       - name: "💾 09 · Salvar cache do state inclusive após falha parcial"
-        if: always() && steps.aws_credentials.outputs.aws-account-id != ''
+        if: always() && steps.cifrar_state_0.outcome == 'success'
         uses: actions/cache/save@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
 
       - name: "📐 10 · Gerar plano do Terraform (apply)"
         if: env.TERRAFORM_ACTION == 'apply'
@@ -748,13 +879,16 @@ jobs:
         if: always()
         run: rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json" "$RUNNER_TEMP/tfplan.json"
 
+      - name: "🔐 Cifrar plano vinculado à tentativa"
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" plan-seal
+
       - name: "⬆️ 12 · Publicar plano do Terraform como artefato"
         uses: actions/upload-artifact@v7
         with:
           name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/tfplan
-            ${{ env.TF_WORKING_DIRECTORY }}/execucao-destroy-context.json
+          path: ${{ env.TF_WORKING_DIRECTORY }}/tfplan.bundle.enc
           retention-days: 1
           if-no-files-found: error
 
@@ -836,6 +970,7 @@ jobs:
     environment:
       name: ${{ inputs.environment_name }}
     env:
+      TERRAFORM_STATE_KEY: ${{ secrets.TERRAFORM_STATE_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
       EKS_CLUSTER_NAME: ${{ needs.prepare_and_plan.outputs.eks_cluster_name }}
@@ -871,15 +1006,23 @@ jobs:
           CURRENT_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
         run: test "$CURRENT_ACCOUNT_ID" = "$PLANNED_ACCOUNT_ID"
 
+      - *protecao_artefatos
+
       - name: "📦 05 · Restaurar cache do state do Terraform"
         uses: actions/cache/restore@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
           restore-keys: |
-            execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+            tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+
+      - name: "🔓 Restaurar state autenticado"
+        id: restaurar_state_protegido
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-open
 
       - *validacoes_inline
       - *validacoes_recuperacao
@@ -911,6 +1054,11 @@ jobs:
           name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TF_WORKING_DIRECTORY }}
 
+      - name: "🔓 Validar e abrir plano desta tentativa"
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" plan-open
+
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-plan
@@ -934,14 +1082,21 @@ jobs:
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" after-destroy
 
+      - name: "🔐 Cifrar state inclusive após falha parcial"
+        id: cifrar_state_1
+        if: always() && steps.restaurar_state_protegido.outcome == 'success'
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-seal
+
       - name: "💾 10 · Salvar cache do state inclusive após falha parcial"
-        if: always() && steps.aws_credentials.outputs.aws-account-id != ''
+        if: always() && steps.cifrar_state_1.outcome == 'success'
         uses: actions/cache/save@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   rollout_check:
     name: "☸️ 05 · Validar rollout da aplicação no EKS"

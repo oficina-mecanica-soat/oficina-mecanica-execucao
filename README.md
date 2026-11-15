@@ -460,3 +460,7 @@ Mantém os bloqueios `AWS_DEPLOY_ENABLED`/`AUTO_PR_ENABLED`, os environments, o 
 ### Ingresso privado
 
 O Service segue o padrão da API principal: HTTP 80 para o contêiner 8080, tipo NodePort e porta exclusiva 30081. A esteira obtém e valida `kubernetes/execucao_internal_node_port`; uma porta divergente bloqueia o plano. Kubernetes mantém o listener TCP privado 8081 e o target group do NLB existente; Gateway publica as rotas do serviço somente após os gates do corte coordenado. Nenhum novo Load Balancer ou regra por CIDR é criado por este serviço.
+
+### Proteção de states e planos
+
+O Environment development exige `TERRAFORM_STATE_KEY`, chave exclusiva aleatória de 256 bits no formato hexadecimal. Não reutilizar JWT nem trocar essa chave enquanto houver backups dependentes dela. A esteira cifra states e planos antes da publicação; falha de autenticação bloqueia a restauração, sem fallback para cache legado. O workflow de migração preserva snapshots legados em artifacts cifrados de 90 dias e confere sua restauração antes de remover a cópia em claro, sem acessar AWS. Apenas o snapshot atual identificado por conta alimenta o cache operacional; históricos ficam arquivados. Consulte a RFC-0007 da API para contexto e recuperação.
