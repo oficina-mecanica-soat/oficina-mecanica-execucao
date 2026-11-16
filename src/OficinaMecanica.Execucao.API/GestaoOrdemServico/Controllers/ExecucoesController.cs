@@ -39,7 +39,7 @@ public sealed class ExecucoesController : ControllerBase
         Guid ordemServicoId, Guid preparacaoId, Guid servicoId, [FromBody] AcaoExecucaoRequest request, CancellationToken cancellationToken)
     {
         var resultado = await useCase.ExecuteAsync(new(request.OperacaoId, ordemServicoId, preparacaoId, servicoId), cancellationToken);
-        return AcceptedAtAction(nameof(Obter), new { ordemServicoId, preparacaoId }, new OperacaoExecucaoAceitaResponse(request.OperacaoId, resultado));
+        return Accepted(Url.Action(nameof(Obter), new { ordemServicoId, preparacaoId }), new OperacaoExecucaoAceitaResponse(request.OperacaoId, resultado));
     }
 
     [HttpPost("servicos/{servicoId:guid}/finalizar", Name = "FinalizarServico")]
@@ -48,7 +48,7 @@ public sealed class ExecucoesController : ControllerBase
         Guid ordemServicoId, Guid preparacaoId, Guid servicoId, [FromBody] AcaoExecucaoRequest request, CancellationToken cancellationToken)
     {
         var resultado = await useCase.ExecuteAsync(new(request.OperacaoId, ordemServicoId, preparacaoId, servicoId), cancellationToken);
-        return AcceptedAtAction(nameof(Obter), new { ordemServicoId, preparacaoId }, new OperacaoExecucaoAceitaResponse(request.OperacaoId, resultado));
+        return Accepted(Url.Action(nameof(Obter), new { ordemServicoId, preparacaoId }), new OperacaoExecucaoAceitaResponse(request.OperacaoId, resultado));
     }
 
     [HttpPost("finalizar", Name = "FinalizarExecucao")]
@@ -57,6 +57,6 @@ public sealed class ExecucoesController : ControllerBase
         Guid ordemServicoId, Guid preparacaoId, [FromBody] AcaoExecucaoRequest request, CancellationToken cancellationToken)
     {
         var resultado = await useCase.ExecuteAsync(new(request.OperacaoId, ordemServicoId, preparacaoId), cancellationToken);
-        return AcceptedAtAction(nameof(Obter), new { ordemServicoId, preparacaoId }, new OperacaoExecucaoAceitaResponse(request.OperacaoId, resultado));
+        return Accepted(Url.Action(nameof(Obter), new { ordemServicoId, preparacaoId }), new OperacaoExecucaoAceitaResponse(request.OperacaoId, resultado));
     }
 }
