@@ -1,0 +1,5 @@
+using OficinaMecanica.Execucao.Application.GestaoEstoque.EstoqueUseCases.Responses;
+
+namespace OficinaMecanica.Execucao.Application.GestaoEstoque.EstoqueUseCases.RegistrarEntradaEstoque;
+
+public sealed record EntradaEstoqueRegistrada(RegistrarEntradaEstoqueRequest Request, ItemEstoqueResponse Resultado);

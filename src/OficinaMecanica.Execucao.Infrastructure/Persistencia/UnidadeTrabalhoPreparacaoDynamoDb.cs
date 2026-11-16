@@ -40,9 +40,9 @@ public sealed class UnidadeTrabalhoPreparacaoDynamoDb(IArmazenamentoExecucao arm
     }
 }
 
-internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao, IEstoqueRepository
+internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
 {
-    public IEstoqueRepository Estoque => this;
+    public IEstoqueRepository Estoque { get; } = new EstoqueTransacionalRepository(tx);
     public Task<PreparacaoAtual?> ObterAtualAsync(Guid osId, CancellationToken ct) => tx.LerAsync<PreparacaoAtual>(ChavesExecucao.Atual(osId), ct);
     public Task<ReferenciaPreparacao?> ObterReferenciaAsync(Guid id, CancellationToken ct) => tx.LerAsync<ReferenciaPreparacao>(ChavesExecucao.Referencia(id), ct);
     public Task<EstadoPreparacao?> ObterPreparacaoAsync(Guid osId, int versao, CancellationToken ct) => tx.LerAsync<EstadoPreparacao>(ChavesExecucao.Preparacao(osId, versao), ct);
@@ -56,24 +56,6 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
         var chave = ChavesExecucao.Reserva(osId, reserva.ItemId, versao);
         if (nova) return tx.AdicionarAsync(chave, reserva, ct);
         tx.Salvar(chave, reserva);
-        return Task.CompletedTask;
-    }
-    public async Task<Estoque> ObterAsync(Guid filialId, IReadOnlyCollection<Guid> itens, CancellationToken ct)
-    {
-        // Sete registros fixos e dois por item devem caber em uma transação.
-        if (itens.Count > 46) throw new ContratoMensagemException("LIMITE_TRANSACAO_DYNAMODB");
-        var saldos = new List<ItemEstoque>();
-        foreach (var id in itens)
-        {
-            var saldo = await tx.LerAsync<SaldoEstoque>(ChavesExecucao.Estoque(filialId, id), ct);
-            if (saldo is not null) saldos.Add(saldo.Reconstituir());
-        }
-        return Domain.GestaoEstoque.Aggregates.Estoque.Reconstituir(filialId, saldos);
-    }
-    public Task AtualizarAsync(Guid filialId, Estoque estoque, CancellationToken ct)
-    {
-        foreach (var item in estoque.ItensEstoque)
-            tx.Salvar(ChavesExecucao.Estoque(filialId, item.PecaInsumoCatalogoId), SaldoEstoque.De(item));
         return Task.CompletedTask;
     }
     public async Task<Mensagem?> ObterResultadoAsync(Mensagem mensagem, int versao, string hash, CancellationToken ct)

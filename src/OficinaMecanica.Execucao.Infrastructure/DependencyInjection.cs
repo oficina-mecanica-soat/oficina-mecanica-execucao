@@ -25,6 +25,7 @@ public static class DependencyInjection
         services.AddSingleton(provider => DynamoDbLocal.CriarClient(provider.GetRequiredService<IOptions<ProcessamentoLocalOptions>>().Value.Endpoint));
         services.AddScoped<IArmazenamentoExecucao>(provider => new ArmazenamentoDynamoDb(provider.GetRequiredService<AmazonDynamoDBClient>(), provider.GetRequiredService<IOptions<ProcessamentoLocalOptions>>().Value.Tabela));
         services.AddScoped<IUnidadeTrabalhoPreparacao, UnidadeTrabalhoPreparacaoDynamoDb>();
+        services.AddScoped<Application.GestaoEstoque.IUnidadeTrabalhoEstoque, UnidadeTrabalhoEstoqueDynamoDb>();
         services.AddScoped<ITransporteResultado>(provider => new TransporteArquivos(Path.Combine(provider.GetRequiredService<IOptions<ProcessamentoLocalOptions>>().Value.Diretorio, "saida")));
         services.AddScoped(provider => new ConsumidorArquivos(provider.GetRequiredService<ProcessadorPreparacao>(), provider.GetRequiredService<IOptions<ProcessamentoLocalOptions>>().Value.Diretorio));
         services.AddScoped<PublicadorOutbox>();
@@ -50,6 +51,7 @@ public static class DependencyInjection
         services.AddSingleton(sqs);
         services.AddScoped<IArmazenamentoExecucao>(_ => new ArmazenamentoDynamoDb(dynamoDb, options.Tabela));
         services.AddScoped<IUnidadeTrabalhoPreparacao, UnidadeTrabalhoPreparacaoDynamoDb>();
+        services.AddScoped<Application.GestaoEstoque.IUnidadeTrabalhoEstoque, UnidadeTrabalhoEstoqueDynamoDb>();
         services.AddScoped<ITransporteResultado>(_ => new TransporteSqs(sqs, options.FilaResultadosOsUrl));
         services.AddScoped(provider => new ConsumidorSqs(sqs, provider.GetRequiredService<ProcessadorPreparacao>(),
             options.FilaEntradaUrl, provider.GetRequiredService<TimeProvider>()));
