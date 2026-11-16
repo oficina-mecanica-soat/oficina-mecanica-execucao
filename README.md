@@ -209,11 +209,13 @@ Testes de integração exigem Docker e falham se o container não puder iniciar;
 
 ## CI/CD e infraestrutura
 
+Na [ordem de apply da solução](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws), Execução sobe após a primeira implantação da API/OS, que publica a fila de resultados. Seu apply cria DynamoDB, entrada/DLQ e workload próprios; `PROCESSAMENTO_REMOTO_HABILITADO=true` usa a fila OS validada. Os três serviços e a Auth devem estar prontos antes da implantação única inicial do Gateway.
+
 Fluxo: `feature/* → PR develop → PR release → PR main`. As branches de estágio não recebem código diretamente. Promoções usam merge commit para preservar ancestralidade. Workflows próprios: CI, CD Development, AWS Deploy reutilizável, CD Release e CD Production. Homologation/production continuam promoções lógicas.
 
-**AWS permanece desligada.** `AWS_DEPLOY_ENABLED=false` impede chamar o deploy no merge de código. Um push deployável sem execução AWS também não promove automaticamente para release. Alterações exclusivamente documentais preservam o fluxo de promoção sem AWS. Não habilitar o deploy nem trocar o controle operacional para provocar provisionamento sem autorização específica.
+`AWS_DEPLOY_ENABLED=false` impede chamar o deploy no merge de código. Um push deployável sem execução AWS também não promove automaticamente para release. Alterações exclusivamente documentais preservam o fluxo de promoção sem AWS. Não habilitar o deploy nem trocar o controle operacional para provocar provisionamento sem autorização específica.
 
-O workload Terraform mantém namespace próprio `oficina-mecanica-execucao`, Deployment, Service privado e Secret JWT, sem criar VPC, EKS, registry compartilhado ou banco alheio. Manifests `k8s/` são referência local/dry-run; na AWS o ownership é exclusivo do Terraform. O roteamento público será integrado na F4-09.
+O workload Terraform mantém namespace próprio `oficina-mecanica-execucao`, Deployment, Service privado e Secret JWT, sem criar VPC, EKS, registry compartilhado ou banco alheio. Manifests `k8s/` são referência local/dry-run; na AWS o ownership é exclusivo do Terraform. O roteamento público pertence ao Gateway e exige os três serviços prontos; o NodePort permanece privado.
 
 ### Modelo de deploy e contratos consumidos
 
