@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Infrastructure.Observabilidade;
 
@@ -7,6 +9,40 @@ namespace OficinaMecanica.Execucao.Infrastructure.UnitTests;
 
 public sealed class ObservabilidadeDatadogTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Dado_OperacaoDeMensagem_Quando_Encerrar_Entao_SeparaResultadoTecnicoDoResultadoDeNegocio(bool falha)
+    {
+        // Arrange
+        var logger = new Mock<ILogger<ObservabilidadeDatadog>>();
+        var observabilidade = new ObservabilidadeDatadog(logger.Object);
+
+        // Act
+        using (var escopo = observabilidade.Iniciar("execucao.processar", Mensagem(null)))
+        {
+            if (falha)
+            {
+                escopo.Falhar();
+            }
+            else
+            {
+                escopo.Concluir("ExecucaoPreparada");
+            }
+        }
+
+        // Assert
+        var evento = Assert.Single(logger.Invocations, i => i.Method.Name == "Log");
+        Assert.Equal(falha ? LogLevel.Warning : LogLevel.Information, evento.Arguments[0]);
+        var propriedades = Assert.IsAssignableFrom<IEnumerable<KeyValuePair<string, object>>>(evento.Arguments[2]);
+        Assert.Contains(propriedades, p => p.Key == "outcome" && Equals(p.Value, falha ? "falha" : "concluida"));
+        Assert.Contains(propriedades, p => p.Key == "duration_ms" && p.Value is double);
+        Assert.Contains(logger.Invocations.Where(i => i.Method.Name == "BeginScope"),
+            i => i.Arguments[0] is Dictionary<string, object> contexto
+                && contexto.TryGetValue("resultado", out var resultado)
+                && Equals(resultado, falha ? "falha" : "ExecucaoPreparada"));
+    }
+
     [Fact]
     public void Dado_EscoposAninhadosSemProfiler_Quando_Encerrar_Entao_RestauraContextoSemVazarParaProximaMensagem()
     {

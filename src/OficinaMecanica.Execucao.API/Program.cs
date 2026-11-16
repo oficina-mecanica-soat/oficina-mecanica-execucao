@@ -8,6 +8,7 @@ using OficinaMecanica.Execucao.API.Extensions.Responses;
 using OficinaMecanica.Execucao.API.Extensions.Configuration;
 using OficinaMecanica.Execucao.API.Filters;
 using OficinaMecanica.Execucao.API.Middlewares;
+using OficinaMecanica.Execucao.API.Extensions.Middlewares;
 using OficinaMecanica.Execucao.API.Responses;
 using OficinaMecanica.Execucao.Application.Common;
 using OficinaMecanica.Execucao.Application;
@@ -78,6 +79,7 @@ using var clientesAws = await builder.AddApiProcessingAsync();
 
 var app = builder.Build();
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseApiRequestLogging();
 app.UseMiddleware<GlobalExceptionMiddleware>();
 app.UseApiSwagger();
 app.UseAuthentication();

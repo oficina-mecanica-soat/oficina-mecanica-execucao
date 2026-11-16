@@ -161,6 +161,8 @@ Revisar cada resultado antes da ação seguinte. Inspeção limitada sem encontr
 
 ## Observabilidade
 
+A emissão HTTP usa o middleware oficial do Serilog configurado como na API principal, com rota parametrizada, correlação e níveis consistentes. Healthcheck saudável não gera ruído no nível normal; avisos e erros permanecem visíveis. A origem do logger é SourceContext; mensagens das bibliotecas são preservadas, e SQL rotineiro fica fora do nível normal. Consulte a [convenção da RFC-0006](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/rfcs/rfc-0006-observabilidade-centralizada-com-datadog.md).
+
 O Deployment segue as tags env/service/version da API e a admissão Datadog existente; não instala Agent adicional. A versão acompanha o SHA da imagem. Envelope e outbox preservam o contexto de trace validado entre publicação, consumo e reinício; X-Correlation-Id é correlação funcional independente e não participa do hash de negócio.
 
 Logs JSON e spans registram serviço, operação, duração e IDs técnicos sem Authorization, credenciais, corpos ou documentos. Os IDs de OS/Saga servem à investigação em logs/traces, sem criar dimensão de métrica por entidade. Contagem de tentativas não equivale a volume único de negócio. O painel compartilhado e a prova de correlação seguem o roteiro da API; métricas ausentes não significam zero e testes sem profiler não comprovam exportação APM.
