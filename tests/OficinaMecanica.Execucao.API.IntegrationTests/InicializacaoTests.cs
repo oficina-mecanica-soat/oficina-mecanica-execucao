@@ -50,7 +50,12 @@ public sealed class InicializacaoTests
                 var respostas = operacao.Value.GetProperty("responses");
                 foreach (var codigo in new[] { "400", "401", "403", "404", "409", "422", "500", "503" })
                     Assert.True(respostas.GetProperty(codigo).TryGetProperty("content", out _));
-                if (operacao.Name == "post")
+                if (caminho.Name == "/api/v1/execucoes/estoque/registrar-entrada")
+                {
+                    Assert.True(respostas.GetProperty("200").GetProperty("content").TryGetProperty("application/json", out _));
+                    Assert.False(respostas.TryGetProperty("202", out _));
+                }
+                else if (operacao.Name == "post")
                 {
                     Assert.True(respostas.GetProperty("202").GetProperty("headers").TryGetProperty("Location", out _));
                     Assert.True(respostas.GetProperty("202").GetProperty("content").TryGetProperty("application/json", out _));
@@ -58,8 +63,8 @@ public sealed class InicializacaoTests
                 }
             }
         }
-        Assert.Equal(4, caminhos.EnumerateObject().Count());
-        Assert.True(operacoes.SetEquals(["ObterExecucao", "IniciarExecucaoServico", "FinalizarServico", "FinalizarExecucao"]));
+        Assert.Equal(5, caminhos.EnumerateObject().Count());
+        Assert.True(operacoes.SetEquals(["ObterExecucao", "IniciarExecucaoServico", "FinalizarServico", "FinalizarExecucao", "RegistrarEntradaEstoque"]));
         Assert.True(caminhos.GetProperty(baseRota).GetProperty("get").GetProperty("responses").TryGetProperty("200", out _));
         var acao = raiz.GetProperty("components").GetProperty("schemas").GetProperty("AcaoExecucaoRequest");
         Assert.Contains(acao.GetProperty("required").EnumerateArray(), propriedade => propriedade.GetString() == "operacaoId");

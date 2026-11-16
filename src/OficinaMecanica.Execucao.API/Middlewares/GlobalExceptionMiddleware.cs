@@ -20,7 +20,7 @@ public sealed class GlobalExceptionMiddleware(RequestDelegate next, ILogger<Glob
                 ContratoMensagemException
                 {
                     Message: "INICIO_SERVICO_INVALIDO" or "FINALIZACAO_SERVICO_INVALIDA"
-                    or "FINALIZACAO_EXECUCAO_INVALIDA" or "CONSULTA_EXECUCAO_INVALIDA"
+                    or "FINALIZACAO_EXECUCAO_INVALIDA" or "CONSULTA_EXECUCAO_INVALIDA" or "ENTRADA_ESTOQUE_INVALIDA"
                 } => new ErrorResponse(ApiResponseMessages.RequisicaoInvalida, TipoErro.Validacao),
                 ContratoMensagemException { Message: "MENSAGEM_ID_REUTILIZADO" or "SNAPSHOT_DIVERGENTE" }
                     or ConflitoConcorrenciaException => new ErrorResponse(ApiResponseMessages.ConflitoPersistencia, TipoErro.Conflito),

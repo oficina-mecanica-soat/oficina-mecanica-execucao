@@ -466,3 +466,9 @@ O Service segue o padrão da API principal: HTTP 80 para o contêiner 8080, tipo
 ### Proteção de states e planos
 
 O Environment development exige `TERRAFORM_STATE_KEY`, chave exclusiva aleatória de 256 bits no formato hexadecimal. Não reutilizar JWT nem trocar essa chave enquanto houver backups dependentes dela. A esteira cifra states e planos antes da publicação; falha de autenticação bloqueia a restauração, sem fallback para cache legado. O workflow de migração preserva snapshots legados em artifacts cifrados de 90 dias e confere sua restauração antes de remover a cópia em claro, sem acessar AWS. Apenas o snapshot atual identificado por conta alimenta o cache operacional; históricos ficam arquivados. Consulte a RFC-0007 da API para contexto e recuperação.
+
+## Entrada de estoque no serviço proprietário
+
+`POST /api/v1/execucoes/estoque/registrar-entrada` permite aos perfis Administrador e Atendente registrar a entrada de peças no estoque da filial. O corpo contém `operacaoId`, `filialId`, `pecaInsumoCatalogoId` e `quantidade` positiva. A rota é encaminhada pelo ingresso de Execução já existente no Gateway.
+
+A regra `Estoque.RegistrarEntrada`, extraída da API original, permanece no Domain. Application valida e coordena; Infrastructure confirma saldo e identificação da entrada na mesma transação DynamoDB. Repetir o mesmo `operacaoId` e conteúdo retorna o resultado original, sem nova soma; conteúdo diferente retorna conflito. A operação preserva quantidades reservadas e usa as mesmas revisões de concorrência da preparação. Não escreve no estoque legado de OS, não acessa seu banco ou valida catálogo por leitura cruzada. Antes da chamada, selecionar filial e item válidos pelo catálogo público responsável.
