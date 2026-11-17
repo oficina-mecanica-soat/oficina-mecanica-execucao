@@ -4,6 +4,8 @@ Serviço responsável por preparação, reserva e baixa de estoque, autorizaçã
 
 ## Arquitetura e referências
 
+A [collection final consolidada](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/postman/oficina-mecanica-completa.postman_collection.json) reúne os três serviços, Auth e demonstração, com ambientes Local e Development. O [guia de uso](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/postman.md) explica parâmetros, perfis, IDs e consultas assíncronas.
+
 A organização segue a API principal e preserva Clean Architecture, DDD, SOLID, KISS e DRY. Distribuição em microsserviços não substitui a separação interna em camadas.
 
 | Camada | Responsabilidade |
@@ -98,7 +100,7 @@ dotnet test OficinaMecanica.Execucao.sln -c Release --no-build --collect:"XPlat 
 
 A CI segue a referência da API: Git Flow, build Release com analisadores e avisos como erros, formato, testes sem ignorados, cobertura mínima de **90%**, Docker, manifests Kubernetes e Terraform. O mínimo acadêmico de 80% não reduz o gate do projeto. A cobertura efetivamente medida pertence aos relatórios de cada execução; não confundir o limite exigido com o resultado observado.
 
-Na [CI de referência do código entregue](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43806755609), foram aprovados **354 testes**, sem falhas ou ignorados, com **95,25% de cobertura global de linhas**. Os relatórios estão no artefato `test-and-coverage-results`. Uma CI somente documental não representa nova medição.
+Na [CI de referência do código entregue](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43952065682), foram aprovados **361 testes**, sem falhas ou ignorados, com **95,38% de cobertura global de linhas** (1.526 de 1.600 linhas). Os relatórios estão no artefato `test-and-coverage-results`. Uma CI somente documental não representa nova medição.
 
 Testes de integração exigem Docker e DynamoDB Local; SQS simulado e transporte por arquivos não comprovam IAM, FIFO/DLQ ou rede AWS. A validação integrada dos três serviços usa o [roteiro canônico](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/validacao-integrada.md), incluindo rejeição sem saldo, compensação e início manual.
 
