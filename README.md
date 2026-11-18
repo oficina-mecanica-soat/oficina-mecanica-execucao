@@ -1,40 +1,30 @@
-# Oficina Mecânica — Execução
+# 🔧 Oficina Mecânica — Execução
 
-Serviço responsável por preparação, reserva e baixa de estoque, autorização persistida e ações físicas do mecânico. A OS coordena a Saga; Orçamento/Pagamento decide o orçamento e confirma a cobrança. Cada serviço possui dados próprios e se comunica pelos contratos da RFC-0007, sem consultar o banco dos demais.
+Microsserviço responsável por preparação, reserva/baixa de estoque e trabalho físico do mecânico. OS coordena a Saga; Orçamento/Pagamento mantém orçamento e cobrança. Os dados de Execução pertencem ao DynamoDB, sem consultas ao banco dos demais serviços.
 
-## Arquitetura e referências
+## 🏗️ Recursos provisionados por esta esteira
 
-A [collection final consolidada](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/postman/oficina-mecanica-completa.postman_collection.json) reúne os três serviços, Auth e demonstração, com ambientes Local e Development. O [guia de uso](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/postman.md) explica parâmetros, perfis, IDs e consultas assíncronas.
-
-A organização segue a API principal e preserva Clean Architecture, DDD, SOLID, KISS e DRY. Distribuição em microsserviços não substitui a separação interna em camadas.
-
-| Camada | Responsabilidade |
+| Recurso próprio | Uso e integração |
 | --- | --- |
-| Domain | Agregados, estoque, preparação, execução, invariantes e abstrações de domínio. |
-| Application | Casos de uso, validação, requests/responses, orquestração local e portas. |
-| Infrastructure | DynamoDB, SQS, unidade de trabalho, persistência de Inbox/Outbox e telemetria. |
-| API | HTTP, JWT, composição e workers; controllers delegam aos casos de uso. |
+| Namespace, Deployment, Secret e Service NodePort 30081 | Workload de Execução; imagem publicada no ECR de Execução criado pela plataforma |
+| Tabela DynamoDB | Estado de preparação/execução, estoque, reservas, deduplicação e Outbox; recursos definidos em `dados-mensageria.tf` |
+| Entrada SQS FIFO, DLQ e política de redrive | Comandos da Saga de OS; os resultados são publicados na fila de OS, que pertence à API |
+| Parâmetros SSM | Nome/ARN da tabela, URLs/ARNs das filas e prontidão de infraestrutura |
 
-Fontes canônicas na API: [README](https://github.com/oficina-mecanica-soat/oficina-mecanica-api), [ADR-0024](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/adrs/adr-0024-evolucao-para-microsservicos.md), [ADR-0025](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/adrs/adr-0025-bancos-e-mensageria-aws.md), [ADR-0026](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/adrs/adr-0026-saga-orquestrada.md) e [RFC-0007](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/rfcs/rfc-0007-evolucao-para-microsservicos.md). Progresso, resultados datados e limitações de aceite ficam somente no [backlog canônico](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/projeto/backlog-tecnico.md).
+Consome EKS, ECR e listener privado 8081 da esteira Kubernetes e a fila de resultados da API. Não cria banco SQL no RDS, outro cluster ou NLB. O Terraform atual não cria ConfigMap nem HPA para Execução: configurações não secretas são definidas no Deployment. Fonte: [`infra/terraform/environments/dev`](infra/terraform/environments/dev).
 
-## Ciclo persistido de execução
+<a id="arquitetura"></a>
 
-`PrepararExecucao.servicos` exige `servicoId` (instância na OS) e `servicoCatalogoId` (referência ao catálogo), conforme a RFC-0007. Ambos são preservados no resultado de preparação e no estado persistido. Não há geração de outro ID nem consulta ao catálogo da OS. Mensagens sem os dois identificadores são rejeitadas. Preparações persistidas sem vínculo de catálogo exigem reconciliação, sem preenchimento automático ou migração destrutiva.
+## 🏗️ Arquitetura
 
-`AutorizarExecucao` v1 persiste a autorização e os serviços pendentes junto da deduplicação, sem iniciar reparo ou publicar evento de início. Sua versão de orçamento é independente da versão da preparação; a Saga de OS continua responsável por validar a associação com o orçamento aprovado. Reentrega idêntica não reativa preparação cancelada nem troca orçamento/Saga. Autorização conflitante, preparação recusada, cancelada, sem serviços ou de outra OS não avançam.
+Clean Architecture com Domain, Application, Infrastructure e API. A autorização da Saga é persistida antes das ações manuais. Preparar ou aprovar orçamento não inicia o reparo. O primeiro início publica `ExecucaoIniciada`; a finalização exige todos os serviços concluídos e confirma baixa de estoque, estado e Outbox na mesma transação. Após início físico, falhas técnicas exigem recuperação, sem compensação fictícia do reparo.
 
-`IniciarExecucaoServicoUseCase`, `FinalizarServicoUseCase` e `FinalizarExecucaoUseCase` seguem Request/Validator/UseCase e resposta tipada, reaproveitando `Servico`, `Estoque.BaixarItens`, unidade de trabalho e outbox. São entradas da Application, reutilizadas pelo HTTP local descrito abaixo, sem novos comandos SQS. Recebem `OperacaoId` estável na repetição, OS/preparação e serviço quando aplicável. A entrada HTTP verifica JWT/perfil e exige esse identificador; o Gateway encaminha essas ações ao serviço proprietário.
-
-O primeiro início manual confirma `ExecucaoIniciada` na mesma transação do estado. Outros serviços não repetem esse evento. Finalizar individualmente não baixa estoque nem conclui a execução. A finalização explícita exige todos os serviços concluídos, valida cada reserva e confirma, numa transação, baixa, marcadores `Baixada`, estado final, deduplicação e `ExecucaoFinalizada` com UTC. Repetição preserva IDs/datas/eventos e não repete a baixa. O agregado físico `Execucao` reúne essas invariantes sem copiar o agregado/Saga de OS.
-
-Cancelamento ainda pode liberar uma preparação autorizada sem início físico. Após o primeiro início, não libera estoque nem emite compensação fictícia. Cancelamento e início comparam a mesma revisão do documento da preparação, impedindo que os dois confirmem. Falha técnica mantém a operação pendente; não se torna decisão de negócio. Uma execução finalizada mantém a barreira contra nova preparação da mesma OS. Eventos conservam OS/Saga/correlação da autorização e usam a operação manual como `causationId`.
-
-`ProcessadorPreparacao` aceita o novo comando de autorização; sua porta interna admite resultado imediato nulo, pois confirmar o comando não equivale a publicar evento. Consumidores local/SQS continuam confirmando somente depois do commit. O modelo físico da tabela, chaves e limite de 46 itens permanecem; autorização/serviços ficam no documento da preparação. Não cria tabela, índice, fila, SSM ou papel IAM.
+As mensagens usam SQS FIFO por OS, Inbox/Outbox e IDs estáveis. `servicoId` identifica a instância na OS; `servicoCatalogoId` identifica o catálogo. Repetir uma operação compatível não repete a baixa.
 
 
-Validação local do ciclo: **220 testes aprovados, zero ignorados**, cobertura consolidada por classe/linha de **96,92%**, restore/build Release sem avisos/erros e formato verificado. Inclui disputas com commits sincronizados, falha antes do commit, reserva inconsistente, autorização/reentrega sem evento fictício, retomada persistida e saldo após baixa. DynamoDB Local é real; SQS e identidade AWS não foram validados em laboratório. O CI confirma os gates e sua cobertura consolidada.
+<a id="http--ações-do-mecânico"></a>
 
-## HTTP — ações do mecânico
+## 🔧 HTTP — ações do mecânico
 
 Contrato definido na RFC-0007. A base é `/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`. Os sufixos e perfis derivam de `OrdensServicoController` da API; as mutações físicas pertencem a este serviço no fluxo distribuído.
 
@@ -53,15 +43,15 @@ O GET projeta preparação, versões, indicadores históricos de reserva/cancela
 
 Erros seguem `ErrorResponse`/`TipoErro` extraídos da API: 404 para preparação ausente ou de outra OS; 409 para conflito de operação/persistência; 422 para regra de negócio; 500 genérico para falha técnica. Não retorna detalhes sensíveis do SDK. No host atual, autenticação/perfil são conferidos antes da persistência e um modo de processamento compatível precisa estar habilitado. Caso contrário, identidade autorizada recebe 503 antes de resolver clientes. Não há fallback de processamento remoto para armazenamento local; health HTTP não substitui a validação dos recursos. `/api/health` permanece público.
 
-Artefatos locais: [OpenAPI](docs/oficina-mecanica-execucao-openapi.json) e [collection Postman](docs/oficina-mecanica-execucao.postman_collection.json). Importar a collection, preencher `jwt`, IDs e os três IDs de operação. Nenhuma credencial está embutida e não há script de geração de token. Primeiro preparar/autorizar pela mensageria local; a collection não simula autorização da Saga. O Compose habilita o modo local em Development; fora dele, configure o modo explicitamente conforme Execução local.
+<a id="estoque"></a>
 
-## Entrada de estoque no serviço proprietário
+## 📦 Estoque
 
-`POST /api/v1/execucoes/estoque/registrar-entrada` permite aos perfis Administrador e Atendente registrar a entrada de peças no estoque da filial. O corpo contém `operacaoId`, `filialId`, `pecaInsumoCatalogoId` e `quantidade` positiva. A rota é encaminhada pelo ingresso de Execução já existente no Gateway.
+`POST /api/v1/execucoes/estoque/registrar-entrada` aceita `operacaoId`, `filialId`, `pecaInsumoCatalogoId` e `quantidade` positiva para Administrador/Atendente. A entrada é idempotente: repetir o ID e conteúdo retorna o resultado anterior; conteúdo divergente retorna conflito. Abastecer este serviço, não o estoque histórico da API.
 
-A regra `Estoque.RegistrarEntrada`, extraída da API original, permanece no Domain. Application valida e coordena; Infrastructure confirma saldo e identificação da entrada na mesma transação DynamoDB. Repetir o mesmo `operacaoId` e conteúdo retorna o resultado original, sem nova soma; conteúdo diferente retorna conflito. A operação preserva quantidades reservadas e usa as mesmas revisões de concorrência da preparação. Não escreve no estoque legado de OS, não acessa seu banco ou valida catálogo por leitura cruzada. Antes da chamada, selecionar filial e item válidos pelo catálogo público responsável.
+<a id="execução-local"></a>
 
-## Execução local
+## 🚀 Execução local
 
 Pré-requisitos: .NET SDK 10 e Docker Desktop. O Compose sobe API em 5094 e DynamoDB Local em `127.0.0.1:8000`, sem AWS ou SQL Server. DynamoDB Local usa credenciais fictícias definidas no cliente local, sem consultar credenciais do laboratório. Os dados do DynamoDB desta configuração são voláteis e permanecem enquanto seu container estiver ativo; reiniciar apenas a API preserva o estado, mas `compose down` o remove.
 
@@ -75,21 +65,9 @@ docker compose down
 
 Resposta esperada: `Healthy`. A porta 5094 evita conflito com a API atual em 5093. O processo recusa inicialização sem issuer, audience e chave válida. O healthcheck é público e não comprova persistência. As rotas manuais e suas condições de disponibilidade estão descritas na seção HTTP local.
 
-O worker lê envelopes JSON completos em `.local/mensagens/entrada/`. Após commit, arquiva em `processadas/`; resultados da outbox aparecem em `saida/`, com o `causationId` do comando original. Contratos inválidos vão para `investigacao/`, com código sanitizado; falhas técnicas preservam a entrada para repetição. Crie arquivos como `.tmp` e renomeie para `.json` só após terminar a gravação. Diretórios locais e `.env` não são versionados nem enviados à imagem.
+<a id="testes-e-qualidade"></a>
 
-Os testes de integração existentes validam reserva, reentrega, compensação e persistência usando DynamoDB Local em Docker, sem credenciais AWS. Execute a suíte descrita em Testes e qualidade. O Compose permanece disponível para inspeção manual; arquivos substituem somente o transporte e não comprovam FIFO/DLQ/IAM/SQS reais.
-
-Sem Docker, defina `Jwt__Secret`, `Jwt__Issuer` e `Jwt__Audience` no ambiente local e execute:
-
-```powershell
-dotnet run --project src/OficinaMecanica.Execucao.API --urls http://localhost:5094
-```
-
-Por padrão, fora do Compose, o worker local está desligado. Para usar DynamoDB Local já iniciado, configure `ASPNETCORE_ENVIRONMENT=Development`, `ProcessamentoLocal__Habilitado=true`, `ProcessamentoLocal__Endpoint=http://localhost:8000`, `ProcessamentoLocal__Tabela` e `ProcessamentoLocal__Diretorio`. O modo local recusa endpoints remotos. Tabelas reais devem ser provisionadas pela esteira oficial; essa preparação cria somente tabela local.
-
-O Compose usa issuer `oficina-mecanica-auth` e audience `oficina-mecanica-api`, conforme o contrato atual de Cliente. Ao integrar serviços, usar issuer, audience e chave compartilhados do mesmo ambiente; a autorização continua dependendo do perfil.
-
-## Testes e qualidade
+## 🧪 Testes e qualidade
 
 ```powershell
 dotnet restore OficinaMecanica.Execucao.sln
@@ -102,15 +80,11 @@ A CI segue a referência da API: Git Flow, build Release com analisadores e avis
 
 Na [CI de referência do código entregue](https://github.com/oficina-mecanica-soat/oficina-mecanica-execucao/actions/runs/43952065682), foram aprovados **361 testes**, sem falhas ou ignorados, com **95,38% de cobertura global de linhas** (1.526 de 1.600 linhas). Os relatórios estão no artefato `test-and-coverage-results`. Uma CI somente documental não representa nova medição.
 
-Testes de integração exigem Docker e DynamoDB Local; SQS simulado e transporte por arquivos não comprovam IAM, FIFO/DLQ ou rede AWS. A validação integrada dos três serviços usa o [roteiro canônico](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/validacao-integrada.md), incluindo rejeição sem saldo, compensação e início manual.
+Testes de integração exigem Docker e DynamoDB Local; SQS simulado e transporte por arquivos não comprovam IAM, FIFO/DLQ ou rede AWS.
 
-## CI/CD e implantação
+<a id="configuração-de-development"></a>
 
-Seguir a [ordem de apply da solução](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws): Execução depende da VPC, plataforma Kubernetes e primeira implantação da API/OS, que publica sua fila de resultados. O Gateway é implantado após os três participantes estarem prontos. Destroy segue a ordem inversa e os bloqueios de consumidores/mensagens pendentes.
-
-Fluxo Git: branch de trabalho → PR para develop → promoção para release → main. CI valida o PR; CD em development usa o plano salvo e a mesma imagem aprovada pela CI, sem rebuild alternativo. Artefato expirado ou conteúdo divergente bloqueiam a publicação. Nenhum workflow aprova PRs. A criação automática de promoções depende dos gates e de AUTO_PR_ENABLED; os merges permanecem sujeitos à governança.
-
-Todo apply, destroy e ajuste real ocorre pelas esteiras oficiais. Consultas locais podem validar recursos, identidade e logs; não podem substituir o CD. Uma alteração documental não autoriza implantação. O controle versionado `infra/terraform/environments/dev/terraform-action.env` define apply/destroy; destroy exige alteração dedicada e reconciliação segura do state. Credencial expirada, acesso negado ou falha de rede não comprovam ausência de recurso.
+## ⚙️ Configuração de development
 
 | Configuração | Responsabilidade |
 | --- | --- |
@@ -121,23 +95,11 @@ Todo apply, destroy e ajuste real ocorre pelas esteiras oficiais. Consultas loca
 | AWS_DEPLOY_ENABLED | Controle da janela de implantação real. |
 | AUTO_PR_ENABLED | Controle de criação dos PRs de promoção, sem autoaprovação. |
 
-### Workload e ingresso privado
+O workload usa namespace próprio, Service NodePort 30081 e listener privado 8081. Credenciais do runner não são enviadas aos Pods; a identidade LabRole compartilhada é a exceção acadêmica da ADR-0025. A criação da tabela e filas pertence a esta esteira; EKS/ECR e NLB pertencem à plataforma Kubernetes.
 
-O apply cria namespace, Deployment, ConfigMap, Secret e Service próprios no cluster compartilhado. O Service usa porta HTTP 80, contêiner 8080 e NodePort contratual 30081. Kubernetes mantém o listener privado 8081 no NLB existente; Gateway encaminha as rotas públicas de Execução. Este serviço não cria outro Load Balancer, EKS ou regras públicas por CIDR.
+<a id="dados-e-mensageria"></a>
 
-O CD lê os contratos Kubernetes/SSM, valida conta/região, registry e fila OS real antes do plano. O modo remoto exige fila de resultados OS compatível; não utiliza URL manual ou outra conta por fallback. Rollout, imagem esperada e health precisam ser conferidos, além dos marcadores de infraestrutura.
-
-### Identidade acadêmica
-
-O runtime usa a exceção LabRole documentada na ADR-0025: credenciais do instance profile, com GetCallerIdentity pela mesma fonte e validação da conta/role esperadas antes de construir os clientes. Não recebe as credenciais do runner nem usa fallback para perfil local. Domain e Application não dependem do SDK de autenticação.
-
-A role compartilhada não fornece isolamento IAM entre Pods com acesso ao IMDS. A plataforma exige IMDSv2 obrigatório/hop limit 2 nos nós efetivos; na retomada Academy, conferir a recuperação pela esteira Kubernetes. Não modificar trust policies ou enfraquecer autenticação como atalho.
-
-### States e recuperação
-
-Planos e states são cifrados antes da publicação em artifacts/caches. Falha de autenticação bloqueia restauração, sem fallback para cache legado. Se o cluster foi removido por Reset, a recuperação declarativa existente exige ausência comprovada e identidade compatível antes de retirar do state os recursos Kubernetes ausentes; não editar state manualmente nem recriar infraestrutura como atalho. Consultar os workflows e a RFC-0007 antes de executar.
-
-## Dados e mensageria
+## 📨 Dados e mensageria
 
 | Recurso | Nome em development | Configuração |
 | --- | --- | --- |
@@ -149,7 +111,9 @@ O consumidor processa PrepararExecucao, CancelarPreparacao e AutorizarExecucao. 
 
 Os seis contratos String em `/oficina-mecanica/{ambiente}/execucao/` são `dynamodb_table_name`, `dynamodb_table_arn`, `entrada_queue_url`, `entrada_queue_arn`, `dlq_url` e `dlq_arn`. O marcador `status/execucao=ready` comprova infraestrutura; não substitui saúde do workload ou prova de consumo. Campos secretos não são publicados nesses contratos.
 
-## Operação individual da DLQ
+<a id="operação-individual-da-dlq"></a>
+
+## 🔎 Operação individual da DLQ
 
 Somente em janela autorizada, usar o workflow AWS Deploy existente, na ref develop e Environment development, com a mesma concorrência do deploy. Não consumir, reenviar, remover ou purgar mensagens por comandos locais. Entradas: dlq_action, mensagem_id, corpo_sha256 e conta_aws. O digest identifica os bytes UTF-8 originais, sem publicar payload, receipt ou credenciais.
 
@@ -161,10 +125,26 @@ Somente em janela autorizada, usar o workflow AWS Deploy existente, na ref devel
 
 Revisar cada resultado antes da ação seguinte. Inspeção limitada sem encontrar a mensagem não comprova DLQ vazia nem exclusão. Em falha ou divergência, não trocar IDs/payload para forçar sucesso; investigar e reconciliar. Leituras individuais não formam snapshot: a unidade de trabalho confere revisões atomicamente antes de confirmar transições ou propagar uma recusa concorrente. Reenvio não restaura posição histórica na FIFO nem contorna versão, cancelamento ou início manual.
 
-## Observabilidade
+<a id="observabilidade"></a>
+
+## 📊 Observabilidade
 
 A emissão HTTP usa o middleware oficial do Serilog configurado como na API principal, com rota parametrizada, correlação e níveis consistentes. Healthcheck saudável não gera ruído no nível normal; avisos e erros permanecem visíveis. A origem do logger é SourceContext; mensagens das bibliotecas são preservadas, e SQL rotineiro fica fora do nível normal. Consulte a [convenção da RFC-0006](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/rfcs/rfc-0006-observabilidade-centralizada-com-datadog.md).
 
 O Deployment segue as tags env/service/version da API e a admissão Datadog existente; não instala Agent adicional. A versão acompanha o SHA da imagem. Envelope e outbox preservam o contexto de trace validado entre publicação, consumo e reinício; X-Correlation-Id é correlação funcional independente e não participa do hash de negócio.
 
 Logs JSON e spans registram serviço, operação, duração e IDs técnicos sem Authorization, credenciais, corpos ou documentos. Os IDs de OS/Saga servem à investigação em logs/traces, sem criar dimensão de métrica por entidade. Contagem de tentativas não equivale a volume único de negócio. O painel compartilhado e a prova de correlação seguem o roteiro da API; métricas ausentes não significam zero e testes sem profiler não comprovam exportação APM.
+
+<a id="operação-e-documentação"></a>
+
+## 🧭 Operação e documentação
+
+- [Visão geral, arquitetura e ordem das esteiras](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws).
+- [Configuração, primeira aplicação e recuperação após Reset](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/deploy/deploy-aws.md).
+- [Collection consolidada e ambientes Local/Development](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/postman.md).
+
+Todo provisionamento, atualização e destroy na AWS ocorre pelas esteiras oficiais. O controle é `infra/terraform/environments/dev/terraform-action.env`; destroy exige alteração dedicada e verificação dos consumidores. `AWS_DEPLOY_ENABLED` autoriza a janela real, e `AUTO_PR_ENABLED` controla somente a abertura de promoções. Alterar uma Variable não dispara o CD.
+
+Um ambiente disponível pode ser testado sem destroy. Sem estado compatível, alguns owners exigem primeiro uma recuperação por destroy dedicado com inventário vazio comprovado. Não apague recursos ou caches para contornar o bloqueio; consulte o guia antes de iniciar uma conta ou retomar um laboratório.
+
+Fluxo Git: branch de trabalho → PR para `develop` → `release` → `main`. O CD físico ocorre em development; release e production registram promoções lógicas. PRs e merges permanecem sujeitos aos checks e à revisão. Mudanças somente em README/docs não exigem deploy físico pelos detectores atuais.
