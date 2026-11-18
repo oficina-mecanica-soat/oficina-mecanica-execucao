@@ -24,6 +24,7 @@ public static class DependencyInjection
         services.AddScoped<FinalizarServicoUseCase>();
         services.AddScoped<FinalizarExecucaoUseCase>();
         services.AddScoped<ObterExecucaoUseCase>();
+        services.AddScoped<GestaoEstoque.EstoqueUseCases.RegistrarEntradaEstoque.RegistrarEntradaEstoqueUseCase>();
         services.AddScoped<ProcessadorPreparacao>();
         return services;
     }

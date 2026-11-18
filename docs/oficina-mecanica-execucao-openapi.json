@@ -1,283 +1,1063 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.0.4",
   "info": {
     "title": "Oficina Mecânica — Execução",
-    "version": "1.0.0",
-    "description": "Contrato local de ações manuais alinhado à RFC-0007. Administrador/Mecanico; JWT conforme configuração do host. Gateway, JWT compartilhado e workload AWS ainda não integrados. Nenhuma rota HTTP autoriza orçamento. As ações retornam 202 após commit local e consulta por Location."
+    "description": "Ações manuais do mecânico conforme a RFC-0007. Autorização de orçamento não inicia o reparo; respostas 202 são emitidas após commit local.",
+    "version": "v1"
   },
-  "servers": [
-    {
-      "url": "http://localhost:5094",
-      "description": "Ambiente local Development com ProcessamentoLocal habilitado."
-    }
-  ],
-  "security": [
-    {
-      "BearerJwt": []
-    }
-  ],
   "paths": {
     "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}": {
       "get": {
+        "tags": [
+          "Execucoes"
+        ],
         "operationId": "ObterExecucao",
-        "summary": "Consultar estado local de uma preparação/execução",
         "parameters": [
           {
-            "$ref": "#/components/parameters/ordemServicoId"
+            "name": "ordemServicoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           {
-            "$ref": "#/components/parameters/preparacaoId"
+            "name": "preparacaoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         ],
         "responses": {
           "400": {
-            "$ref": "#/components/responses/Erro400"
-          },
-          "401": {
-            "$ref": "#/components/responses/Erro401"
-          },
-          "403": {
-            "$ref": "#/components/responses/Erro403"
-          },
-          "404": {
-            "$ref": "#/components/responses/Erro404"
-          },
-          "409": {
-            "$ref": "#/components/responses/Erro409"
-          },
-          "422": {
-            "$ref": "#/components/responses/Erro422"
-          },
-          "500": {
-            "$ref": "#/components/responses/Erro500"
-          },
-          "503": {
-            "$ref": "#/components/responses/Erro503"
-          },
-          "200": {
-            "description": "Estado local, inclusive pendente de autorização ou cancelado; não é recibo da OS.",
+            "description": "Bad Request",
             "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConsultaExecucao"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecucaoResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecucaoResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecucaoResponse"
                 }
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "Bearer": [ ]
+          }
+        ]
       }
     },
     "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/servicos/{servicoId}/iniciar-execucao": {
       "post": {
+        "tags": [
+          "Execucoes"
+        ],
         "operationId": "IniciarExecucaoServico",
-        "summary": "Iniciar manualmente um serviço",
         "parameters": [
           {
-            "$ref": "#/components/parameters/ordemServicoId"
+            "name": "ordemServicoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           {
-            "$ref": "#/components/parameters/preparacaoId"
+            "name": "preparacaoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
           },
           {
-            "$ref": "#/components/parameters/servicoId"
+            "name": "servicoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AcaoExecucao"
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
               }
             }
           }
         },
         "responses": {
           "400": {
-            "$ref": "#/components/responses/Erro400"
-          },
-          "401": {
-            "$ref": "#/components/responses/Erro401"
-          },
-          "403": {
-            "$ref": "#/components/responses/Erro403"
-          },
-          "404": {
-            "$ref": "#/components/responses/Erro404"
-          },
-          "409": {
-            "$ref": "#/components/responses/Erro409"
-          },
-          "422": {
-            "$ref": "#/components/responses/Erro422"
-          },
-          "500": {
-            "$ref": "#/components/responses/Erro500"
-          },
-          "503": {
-            "$ref": "#/components/responses/Erro503"
-          },
-          "202": {
-            "$ref": "#/components/responses/OperacaoAceita"
-          }
-        }
-      }
-    },
-    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/servicos/{servicoId}/finalizar": {
-      "post": {
-        "operationId": "FinalizarServico",
-        "summary": "Finalizar somente um serviço",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/ordemServicoId"
-          },
-          {
-            "$ref": "#/components/parameters/preparacaoId"
-          },
-          {
-            "$ref": "#/components/parameters/servicoId"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AcaoExecucao"
-              }
-            }
-          }
-        },
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/Erro400"
-          },
-          "401": {
-            "$ref": "#/components/responses/Erro401"
-          },
-          "403": {
-            "$ref": "#/components/responses/Erro403"
-          },
-          "404": {
-            "$ref": "#/components/responses/Erro404"
-          },
-          "409": {
-            "$ref": "#/components/responses/Erro409"
-          },
-          "422": {
-            "$ref": "#/components/responses/Erro422"
-          },
-          "500": {
-            "$ref": "#/components/responses/Erro500"
-          },
-          "503": {
-            "$ref": "#/components/responses/Erro503"
-          },
-          "202": {
-            "$ref": "#/components/responses/OperacaoAceita"
-          }
-        }
-      }
-    },
-    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/finalizar": {
-      "post": {
-        "operationId": "FinalizarExecucao",
-        "summary": "Finalizar explicitamente a execução com baixa atômica",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/ordemServicoId"
-          },
-          {
-            "$ref": "#/components/parameters/preparacaoId"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AcaoExecucao"
-              }
-            }
-          }
-        },
-        "responses": {
-          "400": {
-            "$ref": "#/components/responses/Erro400"
-          },
-          "401": {
-            "$ref": "#/components/responses/Erro401"
-          },
-          "403": {
-            "$ref": "#/components/responses/Erro403"
-          },
-          "404": {
-            "$ref": "#/components/responses/Erro404"
-          },
-          "409": {
-            "$ref": "#/components/responses/Erro409"
-          },
-          "422": {
-            "$ref": "#/components/responses/Erro422"
-          },
-          "500": {
-            "$ref": "#/components/responses/Erro500"
-          },
-          "503": {
-            "$ref": "#/components/responses/Erro503"
-          },
-          "202": {
-            "$ref": "#/components/responses/OperacaoAceita"
-          }
-        }
-      }
-    },
-    "/api/health": {
-      "get": {
-        "operationId": "Health",
-        "summary": "Saúde HTTP; não comprova banco, filas ou IAM",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Healthy",
+            "description": "Bad Request",
             "content": {
               "text/plain": {
                 "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "headers": {
+              "Location": {
+                "description": "URL para consultar o estado local da preparação/execução após o commit.",
+                "schema": {
                   "type": "string",
-                  "example": "Healthy"
+                  "format": "uri"
+                }
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
                 }
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "Bearer": [ ]
+          }
+        ]
+      }
+    },
+    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/servicos/{servicoId}/finalizar": {
+      "post": {
+        "tags": [
+          "Execucoes"
+        ],
+        "operationId": "FinalizarServico",
+        "parameters": [
+          {
+            "name": "ordemServicoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "preparacaoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "servicoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "headers": {
+              "Location": {
+                "description": "URL para consultar o estado local da preparação/execução após o commit.",
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "Bearer": [ ]
+          }
+        ]
+      }
+    },
+    "/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}/finalizar": {
+      "post": {
+        "tags": [
+          "Execucoes"
+        ],
+        "operationId": "FinalizarExecucao",
+        "parameters": [
+          {
+            "name": "ordemServicoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "preparacaoId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcaoExecucaoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "headers": {
+              "Location": {
+                "description": "URL para consultar o estado local da preparação/execução após o commit.",
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperacaoExecucaoAceitaResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "Bearer": [ ]
+          }
+        ]
       }
     }
   },
   "components": {
-    "securitySchemes": {
-      "BearerJwt": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT",
-        "description": "JWT do emissor/audience configurados, com role Administrador ou Mecanico; não inserir segredos neste documento."
-      }
-    },
     "schemas": {
-      "Servico": {
-        "type": "object",
+      "AcaoExecucaoRequest": {
         "required": [
-          "id",
-          "servicoCatalogoId",
-          "valor",
-          "status",
-          "dataInicio",
-          "dataFim"
+          "operacaoId"
         ],
+        "type": "object",
+        "properties": {
+          "operacaoId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CicloExecucaoPersistido": {
+        "type": "object",
+        "properties": {
+          "servicos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServicoPersistido"
+            },
+            "nullable": true
+          },
+          "finalizadaEm": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "mensagem": {
+            "type": "string",
+            "nullable": true
+          },
+          "tipo": {
+            "$ref": "#/components/schemas/TipoErro"
+          },
+          "erros": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExecucaoResponse": {
+        "type": "object",
+        "properties": {
+          "preparacaoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "versaoOrcamento": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "execucao": {
+            "$ref": "#/components/schemas/CicloExecucaoPersistido"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperacaoExecucaoAceitaResponse": {
+        "type": "object",
+        "properties": {
+          "operacaoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resultado": {
+            "$ref": "#/components/schemas/ExecucaoResponse"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ServicoPersistido": {
+        "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "format": "uuid",
-            "description": "servicoId da instância na OS, preservado pelo Execução."
+            "format": "uuid"
           },
           "servicoCatalogoId": {
             "type": "string",
@@ -285,329 +1065,57 @@
           },
           "valor": {
             "type": "number",
-            "description": "Decimal em BRL; valor do snapshot, sem cálculo em float."
+            "format": "double"
           },
           "status": {
-            "type": "string",
-            "enum": [
-              "Pendente",
-              "EmExecucao",
-              "Finalizado"
-            ]
+            "$ref": "#/components/schemas/StatusServico"
           },
           "dataInicio": {
             "type": "string",
             "format": "date-time",
-            "nullable": true,
-            "description": "UTC; nulo enquanto a etapa não ocorreu."
+            "nullable": true
           },
           "dataFim": {
             "type": "string",
             "format": "date-time",
-            "nullable": true,
-            "description": "UTC; nulo enquanto a etapa não ocorreu."
-          }
-        },
-        "additionalProperties": false
-      },
-      "CicloExecucao": {
-        "type": "object",
-        "required": [
-          "servicos",
-          "finalizadaEm"
-        ],
-        "properties": {
-          "servicos": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Servico"
-            }
-          },
-          "finalizadaEm": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true,
-            "description": "UTC; nulo enquanto a etapa não ocorreu."
-          }
-        },
-        "additionalProperties": false
-      },
-      "ConsultaExecucao": {
-        "type": "object",
-        "required": [
-          "ordemServicoId",
-          "preparacaoId",
-          "versaoPreparacao",
-          "versaoOrcamento",
-          "reservada",
-          "cancelada",
-          "execucao"
-        ],
-        "properties": {
-          "ordemServicoId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "preparacaoId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "versaoPreparacao": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "versaoOrcamento": {
-            "type": "integer",
-            "minimum": 1,
-            "nullable": true
-          },
-          "reservada": {
-            "type": "boolean",
-            "description": "Confirmação histórica da reserva; não é o saldo reservado atual."
-          },
-          "cancelada": {
-            "type": "boolean"
-          },
-          "execucao": {
-            "type": "object",
-            "required": [
-              "servicos",
-              "finalizadaEm"
-            ],
-            "properties": {
-              "servicos": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/Servico"
-                }
-              },
-              "finalizadaEm": {
-                "type": "string",
-                "format": "date-time",
-                "nullable": true,
-                "description": "UTC; nulo enquanto a etapa não ocorreu."
-              }
-            },
-            "additionalProperties": false,
             "nullable": true
           }
         },
         "additionalProperties": false
       },
-      "ResultadoExecucao": {
-        "type": "object",
-        "required": [
-          "preparacaoId",
-          "versaoOrcamento",
-          "execucao"
+      "StatusServico": {
+        "enum": [
+          "Pendente",
+          "EmExecucao",
+          "Finalizado"
         ],
-        "properties": {
-          "preparacaoId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "versaoOrcamento": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "execucao": {
-            "$ref": "#/components/schemas/CicloExecucao"
-          }
-        },
-        "additionalProperties": false
+        "type": "string"
       },
-      "AcaoExecucao": {
-        "type": "object",
-        "required": [
-          "operacaoId"
+      "TipoErro": {
+        "enum": [
+          "Validacao",
+          "NaoEncontrado",
+          "RegraNegocio",
+          "NaoAutorizado",
+          "ErroInterno",
+          "AcessoProibido",
+          "Conflito"
         ],
-        "properties": {
-          "operacaoId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "UUID não vazio e estável na repetição da mesma ação."
-          }
-        },
-        "additionalProperties": false
-      },
-      "OperacaoAceita": {
-        "type": "object",
-        "required": [
-          "operacaoId",
-          "resultado"
-        ],
-        "properties": {
-          "operacaoId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "resultado": {
-            "$ref": "#/components/schemas/ResultadoExecucao"
-          }
-        },
-        "additionalProperties": false
-      },
-      "Erro": {
-        "type": "object",
-        "required": [
-          "mensagem",
-          "tipo"
-        ],
-        "properties": {
-          "mensagem": {
-            "type": "string"
-          },
-          "tipo": {
-            "type": "string",
-            "enum": [
-              "Validacao",
-              "NaoEncontrado",
-              "RegraNegocio",
-              "NaoAutorizado",
-              "ErroInterno",
-              "AcessoProibido",
-              "Conflito"
-            ]
-          },
-          "erros": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "additionalProperties": false
+        "type": "string"
       }
     },
-    "responses": {
-      "Erro400": {
-        "description": "Corpo ou identificadores inválidos.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro401": {
-        "description": "JWT ausente ou inválido.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro403": {
-        "description": "Perfil sem acesso.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro404": {
-        "description": "Preparação não encontrada para a OS.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro409": {
-        "description": "Operação reutilizada ou conflito de persistência.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro422": {
-        "description": "Regra de negócio impede a ação.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro500": {
-        "description": "Falha técnica; detalhes sensíveis não são expostos.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "Erro503": {
-        "description": "Processamento indisponível no host atual; sem fallback local em produção.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/Erro"
-            }
-          }
-        }
-      },
-      "OperacaoAceita": {
-        "description": "Transação local confirmada. Não afirma processamento na OS, pagamento ou entrega.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/OperacaoAceita"
-            }
-          }
-        },
-        "headers": {
-          "Location": {
-            "description": "GET do estado local da preparação/execução.",
-            "schema": {
-              "type": "string",
-              "format": "uri"
-            }
-          }
-        }
-      }
-    },
-    "parameters": {
-      "ordemServicoId": {
-        "name": "ordemServicoId",
-        "in": "path",
-        "required": true,
-        "schema": {
-          "type": "string",
-          "format": "uuid"
-        }
-      },
-      "preparacaoId": {
-        "name": "preparacaoId",
-        "in": "path",
-        "required": true,
-        "schema": {
-          "type": "string",
-          "format": "uuid"
-        }
-      },
-      "servicoId": {
-        "name": "servicoId",
-        "in": "path",
-        "required": true,
-        "schema": {
-          "type": "string",
-          "format": "uuid"
-        }
+    "securitySchemes": {
+      "Bearer": {
+        "type": "http",
+        "description": "Token JWT de Administrador ou Mecanico.",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
       }
     }
-  }
+  },
+  "tags": [
+    {
+      "name": "Execucoes"
+    }
+  ]
 }

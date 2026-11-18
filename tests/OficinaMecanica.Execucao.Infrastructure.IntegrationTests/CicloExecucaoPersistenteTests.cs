@@ -119,23 +119,47 @@ public sealed class CicloExecucaoPersistenteTests(DynamoDbFixture fixture) : ICl
         Assert.Equal("ExecucaoIniciada", Assert.Single(await c.ResultadosAsync()).Tipo);
     }
 
-    [Fact]
-    public async Task Dado_CancelamentoEInicioConcorrentes_Quando_DisputarPreparacao_Entao_SomenteUmConfirma()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Dado_CancelamentoEInicioConcorrentes_Quando_DisputarPreparacao_Entao_SomenteUmConfirma(bool inicioVence)
     {
         using var c = await Cenario.CriarAsync(fixture);
         await c.AutorizarAsync();
-        var barreira = new BarreiraCommit(c.Base.Armazenamento);
-        var inicio = Record.ExceptionAsync(() => c.IniciarAsync(0, armazenamento: barreira));
-        var cancelamento = Record.ExceptionAsync(() => c.Base.EnviarAsync(c.Base.Comando("CancelarPreparacao",
-            new CancelarPreparacao(c.PreparacaoId, "Recusa")), CenarioPreparacao.CriarProcessador(barreira, c.Base.Relogio)));
+        var disputa = new DisputaCommit(c.Base.Armazenamento);
+        var operacaoInicio = Guid.NewGuid();
+        var comandoCancelar = c.Base.Comando("CancelarPreparacao", new CancelarPreparacao(c.PreparacaoId, "Recusa"));
+        var inicio = Record.ExceptionAsync(() => c.IniciarAsync(0, operacaoInicio, disputa.Participante(inicioVence)));
+        var cancelamento = Record.ExceptionAsync(() => c.Base.EnviarAsync(comandoCancelar,
+            CenarioPreparacao.CriarProcessador(disputa.Participante(!inicioVence), c.Base.Relogio)));
         var resultados = await Task.WhenAll(inicio, cancelamento);
         Assert.Single(resultados, erro => erro is null);
         Assert.IsType<ContratoMensagemException>(Assert.Single(resultados, erro => erro is not null));
         var estado = await c.EstadoAsync();
-        Assert.NotEqual(estado.Cancelada, estado.Execucao!.Reconstituir().IniciadaEm is not null);
+        Assert.Equal(!inicioVence, estado.Cancelada);
+        Assert.Equal(inicioVence, estado.Execucao!.Reconstituir().IniciadaEm is not null);
         var saldo = (await c.Base.SaldoAsync())!;
-        Assert.Equal(estado.Cancelada ? 10 : 7, saldo.Disponivel);
-        Assert.Single(await c.ResultadosAsync());
+        Assert.Equal(inicioVence ? 7 : 10, saldo.Disponivel);
+        Assert.Equal(inicioVence ? 3 : 0, saldo.Reservada);
+        var evento = Assert.Single(await c.ResultadosAsync());
+        Assert.Equal(inicioVence ? "ExecucaoIniciada" : "PreparacaoCancelada", evento.Tipo);
+
+        // Novos casos de uso/processadores leem somente o banco, sem a barreira de teste.
+        var reiniciado = CenarioPreparacao.CriarProcessador(c.Base.Armazenamento, c.Base.Relogio);
+        if (inicioVence)
+        {
+            await c.IniciarAsync(0, operacaoInicio);
+            var erro = await Assert.ThrowsAsync<ContratoMensagemException>(() => reiniciado.ProcessarAsync(JsonContrato.Serializar(comandoCancelar)));
+            Assert.Equal("EXECUCAO_FISICA_INICIADA", erro.Message);
+        }
+        else
+        {
+            var repetido = await reiniciado.ProcessarAsync(JsonContrato.Serializar(comandoCancelar with { MensagemId = Guid.NewGuid() }));
+            Assert.Equal(JsonContrato.Serializar(evento), JsonContrato.Serializar(repetido!));
+            await Assert.ThrowsAsync<ContratoMensagemException>(() => c.IniciarAsync(0, operacaoInicio));
+        }
+        Assert.Equal(saldo, await c.Base.SaldoAsync());
+        Assert.Empty(await c.ResultadosAsync());
     }
 
     [Fact]
@@ -267,6 +291,43 @@ public sealed class CicloExecucaoPersistenteTests(DynamoDbFixture fixture) : ICl
     {
         public List<Mensagem> Mensagens { get; } = [];
         public Task PublicarAsync(Mensagem mensagem, CancellationToken ct) { Mensagens.Add(mensagem); return Task.CompletedTask; }
+    }
+
+    private sealed class DisputaCommit(IArmazenamentoExecucao armazenamento)
+    {
+        private int _participantes;
+        private readonly TaskCompletionSource _ambosProntos = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _vencedorConfirmado = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IArmazenamentoExecucao Participante(bool vencedor) => new ArmazenamentoDisputa(this, armazenamento, vencedor);
+
+        private async Task ConfirmarAsync(IReadOnlyCollection<AlteracaoRegistro> registros, bool vencedor, CancellationToken ct)
+        {
+            // Ambos devem ler a mesma revisão antes de permitir o primeiro commit real.
+            if (Interlocked.Increment(ref _participantes) == 2) _ambosProntos.TrySetResult();
+            await _ambosProntos.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            if (vencedor)
+            {
+                try { await armazenamento.ConfirmarAsync(registros, ct); }
+                finally { _vencedorConfirmado.TrySetResult(); }
+            }
+            else
+            {
+                await _vencedorConfirmado.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                await armazenamento.ConfirmarAsync(registros, ct);
+            }
+        }
+
+        private sealed class ArmazenamentoDisputa(DisputaCommit disputa, IArmazenamentoExecucao inner, bool vencedor) : IArmazenamentoExecucao
+        {
+            private int _tentativas;
+            public Task<Registro> ObterAsync(ChaveRegistro chave, CancellationToken ct) => inner.ObterAsync(chave, ct);
+            public Task<Registro?> ObterPrimeiraOutboxAsync(CancellationToken ct) => inner.ObterPrimeiraOutboxAsync(ct);
+            public Task ConfirmarAsync(IReadOnlyCollection<AlteracaoRegistro> registros, CancellationToken ct) =>
+                Interlocked.Increment(ref _tentativas) == 1
+                    ? disputa.ConfirmarAsync(registros, vencedor, ct)
+                    : inner.ConfirmarAsync(registros, ct);
+        }
     }
 
     private sealed class BarreiraCommit(IArmazenamentoExecucao inner) : IArmazenamentoExecucao

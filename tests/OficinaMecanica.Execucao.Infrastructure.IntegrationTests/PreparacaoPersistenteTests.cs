@@ -1,5 +1,10 @@
 using OficinaMecanica.Execucao.Infrastructure.Mensagens;
 using System.Text.Json;
+using System.Text;
+using System.Text.Encodings.Web;
+using Amazon.SQS;
+using Amazon.SQS.Model;
+using Moq;
 using OficinaMecanica.Execucao.Application.Mensagens;
 using OficinaMecanica.Execucao.Application.Persistencia;
 using OficinaMecanica.Execucao.Application.Preparacoes;
@@ -10,6 +15,184 @@ namespace OficinaMecanica.Execucao.Infrastructure.IntegrationTests;
 
 public sealed class PreparacaoPersistenteTests(DynamoDbFixture fixture) : IClassFixture<DynamoDbFixture>
 {
+    [Theory]
+    [InlineData(10, "ExecucaoPreparada", 7, 3)]
+    [InlineData(2, "PreparacaoRecusada", 2, 0)]
+    public async Task Dado_ComandoRealDaOs_Quando_ReentregarAposRecriarProcessador_Entao_PreservaSaldoResultadoEIdentidades(
+        int quantidadeInicial, string tipoResultado, int disponivel, int reservada)
+    {
+        // JSON capturado do SolicitarPreparacaoOrdemServicoUseCase da API (2546e31),
+        // com SQL real e dados sintéticos. Não gerar este contrato pelo DTO consumidor.
+        const string json = """
+            {
+              "mensagemId": "01a1da92-15c9-72af-abd5-8720859908c2",
+              "tipo": "PrepararExecucao",
+              "versao": 1,
+              "sagaId": "9fd7bd53-3ac2-4a5d-bc0e-e2718967e68a",
+              "ordemServicoId": "e0d0094a-a5b8-437a-847e-fd8e991305ab",
+              "correlationId": "integracao-local-aprovacao",
+              "causationId": "cfe7f34a-77b9-4713-83bb-219d4198baa2",
+              "ocorridoEm": "2026-11-14T14:59:29.3539213+00:00",
+              "dados": {
+                "versao": 1,
+                "filialId": "db58d375-7637-4136-b428-922865a93990",
+                "veiculoId": "26658ca5-5c4f-4c8c-9c72-c61735ba113f",
+                "mecanicoId": "c04b83ca-1514-4573-8115-57c2eac07c43",
+                "itens": [
+                  {
+                    "itemId": "da263e59-7c0b-48ce-afae-024c45e2c13e",
+                    "quantidade": 3
+                  }
+                ],
+                "servicos": [
+                  {
+                    "servicoId": "81cc02c8-d498-4c5b-8d54-37a8ea39639b",
+                    "servicoCatalogoId": "0ded7995-ce06-495f-8adc-3e62833c8d98",
+                    "descricao": "Troca de \u00F3leo",
+                    "valor": 150.00
+                  }
+                ]
+              }
+            }
+            """;
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        var comando = JsonContrato.Ler<Mensagem>(json);
+        var dados = JsonContrato.Ler<PrepararExecucao>(comando.Dados.GetRawText());
+        var item = Assert.Single(dados.Itens);
+        await cenario.SemearAsync(quantidadeInicial, item.ItemId, dados.FilialId);
+
+        var primeiro = await cenario.Processador.ProcessarAsync(json);
+        var reiniciado = CenarioPreparacao.CriarProcessador(cenario.Armazenamento, cenario.Relogio);
+        var repetido = await reiniciado.ProcessarAsync(JsonContrato.Serializar(comando with { MensagemId = Guid.NewGuid() }));
+
+        Assert.NotNull(primeiro);
+        Assert.NotNull(repetido);
+        Assert.Equal(tipoResultado, primeiro.Tipo);
+        Assert.Equal(JsonContrato.Serializar(primeiro), JsonContrato.Serializar(repetido));
+        Assert.Equal(comando.MensagemId, primeiro.CausationId);
+        Assert.Equal(comando.SagaId, primeiro.SagaId);
+        Assert.Equal(comando.CorrelationId, primeiro.CorrelationId);
+        var saldo = (await cenario.Armazenamento.ObterAsync(ChavesExecucao.Estoque(dados.FilialId, item.ItemId), default)).Ler<SaldoEstoque>()!;
+        Assert.Equal(disponivel, saldo.Disponivel);
+        Assert.Equal(reservada, saldo.Reservada);
+        var sequencia = (await cenario.Armazenamento.ObterAsync(ChavesExecucao.SequenciaOutbox, default)).Ler<SequenciaOutbox>()!;
+        Assert.Equal(1, sequencia.Valor);
+        if (tipoResultado == "ExecucaoPreparada")
+        {
+            var preparada = JsonContrato.Ler<ExecucaoPreparada>(primeiro.Dados.GetRawText());
+            var servico = Assert.Single(preparada.Diagnostico.Servicos);
+            Assert.Equal(Guid.Parse("81cc02c8-d498-4c5b-8d54-37a8ea39639b"), servico.ServicoId);
+            Assert.Equal(Guid.Parse("0ded7995-ce06-495f-8adc-3e62833c8d98"), servico.ServicoCatalogoId);
+            Assert.Equal(150m, servico.Valor);
+            Assert.Equal("Troca de óleo", servico.Descricao);
+        }
+        else
+        {
+            Assert.Equal("ESTOQUE_INSUFICIENTE", primeiro.Dados.GetProperty("codigoMotivo").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1000)]
+    public async Task Dado_OutboxProximaDoLimite_Quando_Registrar_Entao_ReservaEspacoParaLeaseEBackoff(int margem)
+    {
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        var mensagem = cenario.Comando("ExecucaoPreparada", new { texto = "" });
+        var chave = ChavesExecucao.Outbox(1, mensagem);
+        var custo = LimitesDocumentoDynamoDb.TamanhoConservador(chave, JsonContrato.Serializar(new PendenciaOutbox(mensagem)));
+        var tamanho = checked((int)(LimitesDocumentoDynamoDb.MaximoBytes - custo - margem));
+        mensagem = mensagem with { Dados = JsonSerializer.SerializeToElement(new { texto = new string('x', tamanho) }, JsonContrato.Options) };
+        var observado = new ArmazenamentoObservado(cenario.Armazenamento);
+        var unidade = new UnidadeTrabalhoPreparacaoDynamoDb(observado);
+        var executar = () => unidade.ExecutarAsync(async sessao =>
+        {
+            await sessao.AdicionarResultadoAsync(mensagem, default);
+            return true;
+        }, default);
+
+        if (margem == 0)
+        {
+            await Assert.ThrowsAsync<SnapshotNaoPersistivelException>(executar);
+            Assert.Equal(0, observado.Confirmacoes);
+            Assert.Null(await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default));
+            Assert.Null((await cenario.Armazenamento.ObterAsync(ChavesExecucao.SequenciaOutbox, default)).Json);
+        }
+        else
+        {
+            Assert.True(await executar());
+            Assert.Equal(1, observado.Confirmacoes);
+            Assert.Equal(mensagem.MensagemId, (await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default))!.Ler<PendenciaOutbox>()!.Mensagem.MensagemId);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dado_SnapshotNaoPersistivel_Quando_Consumir_Entao_NaoGravaNaoRepeteTransacaoNemConfirma(bool crescimentoDoCiclo)
+    {
+        using var cenario = await CenarioPreparacao.CriarAsync(fixture);
+        await cenario.SemearAsync();
+        var dados = cenario.Dados();
+        dados = dados with
+        {
+            Servicos = crescimentoDoCiclo
+                ? Enumerable.Range(0, 1500).Select(_ => new ServicoSolicitado(Guid.NewGuid(), "S", 1m, Guid.NewGuid())).ToArray()
+                : [dados.Servicos[0] with { Descricao = new string('á', 100_000) }]
+        };
+        var comando = cenario.Comando("PrepararExecucao", dados);
+        var json = JsonSerializer.Serialize(comando, new JsonSerializerOptions(JsonContrato.Options) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        if (!crescimentoDoCiclo) Assert.True(Encoding.UTF8.GetByteCount(json) < 250_000);
+        else Assert.True(LimitesDocumentoDynamoDb.TamanhoConservador(ChavesExecucao.Preparacao(cenario.OsId, 1),
+            JsonContrato.Serializar(new EstadoPreparacao(Guid.NewGuid(), dados, true, false))) < LimitesDocumentoDynamoDb.MaximoBytes);
+        var armazenamento = new ArmazenamentoObservado(cenario.Armazenamento);
+        var processador = CenarioPreparacao.CriarProcessador(armazenamento, cenario.Relogio);
+        var sqs = new Mock<IAmazonSQS>(MockBehavior.Strict);
+        sqs.Setup(s => s.ReceiveMessageAsync(It.IsAny<ReceiveMessageRequest>(), It.IsAny<CancellationToken>())).ReturnsAsync(new ReceiveMessageResponse
+        {
+            Messages = [new Message { Body = json, ReceiptHandle = "recibo-teste", Attributes = new()
+            {
+                ["MessageGroupId"] = comando.OrdemServicoId.ToString(), ["MessageDeduplicationId"] = comando.MensagemId.ToString()
+            } }]
+        });
+        var consumidor = new ConsumidorSqs(sqs.Object, processador,
+            "https://sqs.us-east-1.amazonaws.com/123456789012/teste.fifo", TimeProvider.System);
+
+        var erro = await Assert.ThrowsAsync<SnapshotNaoPersistivelException>(() => consumidor.ProcessarProximaAsync());
+
+        Assert.Equal("SNAPSHOT_NAO_PERSISTIVEL", erro.Message);
+        Assert.Equal(comando.MensagemId, erro.MensagemId);
+        Assert.Equal(comando.OrdemServicoId, erro.OrdemServicoId);
+        Assert.Equal(0, armazenamento.Confirmacoes);
+        Assert.Equal(1, armazenamento.Leituras[ChavesExecucao.Recebida(comando.MensagemId)]);
+        var saldo = (await cenario.SaldoAsync())!;
+        Assert.Equal(10, saldo.Disponivel);
+        Assert.Equal(0, saldo.Reservada);
+        foreach (var chave in new[] { ChavesExecucao.Atual(cenario.OsId), ChavesExecucao.Preparacao(cenario.OsId, 1),
+            ChavesExecucao.Recebida(comando.MensagemId), ChavesExecucao.Reserva(cenario.OsId, cenario.ItemId, 1) })
+            Assert.Null((await cenario.Armazenamento.ObterAsync(chave, default)).Json);
+        Assert.Null(await cenario.Armazenamento.ObterPrimeiraOutboxAsync(default));
+        sqs.Verify(s => s.ReceiveMessageAsync(It.IsAny<ReceiveMessageRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        sqs.VerifyNoOtherCalls();
+    }
+
+    private sealed class ArmazenamentoObservado(IArmazenamentoExecucao real) : IArmazenamentoExecucao
+    {
+        public int Confirmacoes { get; private set; }
+        public Dictionary<ChaveRegistro, int> Leituras { get; } = [];
+        public Task<Registro> ObterAsync(ChaveRegistro chave, CancellationToken ct)
+        {
+            Leituras[chave] = Leituras.GetValueOrDefault(chave) + 1;
+            return real.ObterAsync(chave, ct);
+        }
+        public Task ConfirmarAsync(IReadOnlyCollection<AlteracaoRegistro> registros, CancellationToken ct)
+        {
+            Confirmacoes++;
+            return real.ConfirmarAsync(registros, ct);
+        }
+        public Task<Registro?> ObterPrimeiraOutboxAsync(CancellationToken ct) => real.ObterPrimeiraOutboxAsync(ct);
+    }
+
     [Fact]
     public async Task Dado_MesmoSnapshotComMetadadosOuEscalaDecimalDiferentes_Quando_Reentregar_Entao_Deduplica()
     {

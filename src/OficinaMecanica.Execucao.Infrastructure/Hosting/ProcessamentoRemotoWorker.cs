@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using OficinaMecanica.Execucao.Infrastructure.Mensagens;
+using OficinaMecanica.Execucao.Application.Mensagens;
 
 namespace OficinaMecanica.Execucao.Infrastructure.Hosting;
 
@@ -48,6 +49,11 @@ public sealed class ProcessamentoRemotoWorker(IServiceScopeFactory scopeFactory,
                         : await publicador!.PublicarProximaAsync(ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (SnapshotNaoPersistivelException error)
+                {
+                    logger.LogWarning("Rejeição técnica permanente {codigo}; mensagem {mensagem_id}, OS {ordem_servico_id}. Sem confirmação; política DLQ preservada.",
+                        SnapshotNaoPersistivelException.Codigo, error.MensagemId, error.OrdemServicoId);
+                }
                 catch (Exception)
                 {
                     // Não registrar envelope, credenciais ou detalhes sensíveis devolvidos pelo SDK.

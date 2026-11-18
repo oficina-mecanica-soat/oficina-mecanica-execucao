@@ -34,5 +34,12 @@ public static class JsonContrato
 }
 
 public sealed class ContratoMensagemException(string codigo) : Exception(codigo);
+public sealed class SnapshotNaoPersistivelException(Guid? mensagemId = null, Guid? ordemServicoId = null)
+    : Exception(Codigo)
+{
+    public const string Codigo = "SNAPSHOT_NAO_PERSISTIVEL";
+    public Guid? MensagemId { get; } = mensagemId;
+    public Guid? OrdemServicoId { get; } = ordemServicoId;
+}
 public sealed class ConflitoConcorrenciaException : Exception;
 public sealed class PreparacaoNaoEncontradaException : Exception;

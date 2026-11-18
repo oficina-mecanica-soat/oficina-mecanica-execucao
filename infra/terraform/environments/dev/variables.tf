@@ -4,6 +4,16 @@ variable "processamento_remoto_habilitado" {
   description = "Ativação explícita do runtime acadêmico; exige janela autorizada e contrato da entrada de OS."
 }
 
+variable "node_port" {
+  type        = number
+  default     = 30081
+  description = "Porta exclusiva do ingresso privado, obtida do contrato Kubernetes pela esteira."
+  validation {
+    condition     = var.node_port == 30081
+    error_message = "Execução deve usar o NodePort contratual 30081, sem colisão com API ou Orçamento/Pagamento."
+  }
+}
+
 variable "os_entrada_queue_url" {
   type        = string
   default     = ""
@@ -18,6 +28,7 @@ variable "kubeconfig_path" {
 variable "image_uri" {
   type        = string
   description = "Imagem imutável sha-* do registry próprio, gerenciado pela infraestrutura Kubernetes."
+
   validation {
     condition     = can(regex(":sha-[0-9a-f]{40}$", var.image_uri))
     error_message = "Use uma imagem com tag sha- seguida do SHA completo do commit."
@@ -28,6 +39,7 @@ variable "jwt_secret" {
   type        = string
   sensitive   = true
   description = "Chave compatível com os emissores atuais; segue a concessão acadêmica da API."
+
   validation {
     condition     = length(var.jwt_secret) >= 32
     error_message = "A chave JWT deve ter pelo menos 32 caracteres."
@@ -53,6 +65,7 @@ variable "environment" {
   type        = string
   default     = "development"
   description = "Ambiente usado nos nomes dos recursos próprios e contratos SSM."
+
   validation {
     condition     = contains(["development", "homologation", "production"], var.environment)
     error_message = "Use o nome de ambiente documentado no Git Flow."

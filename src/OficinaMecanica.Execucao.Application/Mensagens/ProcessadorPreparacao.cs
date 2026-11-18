@@ -31,6 +31,11 @@ public sealed class ProcessadorPreparacao(PrepararExecucaoUseCase preparar, Canc
             escopo?.Concluir(resultado.Tipo);
             return resultado;
         }
+        catch (SnapshotNaoPersistivelException)
+        {
+            escopo?.Falhar();
+            throw new SnapshotNaoPersistivelException(mensagem.MensagemId, mensagem.OrdemServicoId);
+        }
         catch (JsonException) { escopo?.Falhar(); throw new ContratoMensagemException("DADOS_INVALIDOS"); }
         catch { escopo?.Falhar(); throw; }
     }

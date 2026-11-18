@@ -40,9 +40,9 @@ public sealed class UnidadeTrabalhoPreparacaoDynamoDb(IArmazenamentoExecucao arm
     }
 }
 
-internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao, IEstoqueRepository
+internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
 {
-    public IEstoqueRepository Estoque => this;
+    public IEstoqueRepository Estoque { get; } = new EstoqueTransacionalRepository(tx);
     public Task<PreparacaoAtual?> ObterAtualAsync(Guid osId, CancellationToken ct) => tx.LerAsync<PreparacaoAtual>(ChavesExecucao.Atual(osId), ct);
     public Task<ReferenciaPreparacao?> ObterReferenciaAsync(Guid id, CancellationToken ct) => tx.LerAsync<ReferenciaPreparacao>(ChavesExecucao.Referencia(id), ct);
     public Task<EstadoPreparacao?> ObterPreparacaoAsync(Guid osId, int versao, CancellationToken ct) => tx.LerAsync<EstadoPreparacao>(ChavesExecucao.Preparacao(osId, versao), ct);
@@ -56,24 +56,6 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
         var chave = ChavesExecucao.Reserva(osId, reserva.ItemId, versao);
         if (nova) return tx.AdicionarAsync(chave, reserva, ct);
         tx.Salvar(chave, reserva);
-        return Task.CompletedTask;
-    }
-    public async Task<Estoque> ObterAsync(Guid filialId, IReadOnlyCollection<Guid> itens, CancellationToken ct)
-    {
-        // Sete registros fixos e dois por item devem caber em uma transação.
-        if (itens.Count > 46) throw new ContratoMensagemException("LIMITE_TRANSACAO_DYNAMODB");
-        var saldos = new List<ItemEstoque>();
-        foreach (var id in itens)
-        {
-            var saldo = await tx.LerAsync<SaldoEstoque>(ChavesExecucao.Estoque(filialId, id), ct);
-            if (saldo is not null) saldos.Add(saldo.Reconstituir());
-        }
-        return Domain.GestaoEstoque.Aggregates.Estoque.Reconstituir(filialId, saldos);
-    }
-    public Task AtualizarAsync(Guid filialId, Estoque estoque, CancellationToken ct)
-    {
-        foreach (var item in estoque.ItensEstoque)
-            tx.Salvar(ChavesExecucao.Estoque(filialId, item.PecaInsumoCatalogoId), SaldoEstoque.De(item));
         return Task.CompletedTask;
     }
     public async Task<Mensagem?> ObterResultadoAsync(Mensagem mensagem, int versao, string hash, CancellationToken ct)
@@ -106,6 +88,12 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
     public async Task RegistrarResultadoAsync(Mensagem mensagem, int versao,
         string hash, Mensagem resultado, CancellationToken ct)
     {
+        if (mensagem.Tipo == "PrepararExecucao")
+        {
+            var estado = await tx.LerAsync<EstadoPreparacao>(ChavesExecucao.Preparacao(mensagem.OrdemServicoId, versao), ct)
+                ?? throw new PreparacaoNaoEncontradaException();
+            LimitesDocumentoDynamoDb.ValidarCrescimento(mensagem.OrdemServicoId, versao, estado, mensagem);
+        }
         var operacao = ChavesExecucao.Operacao(mensagem.OrdemServicoId, versao, mensagem.Tipo);
         tx.Salvar(ChavesExecucao.Recebida(mensagem.MensagemId), new MensagemRecebida(hash));
         tx.Salvar(operacao, new OperacaoProcessada(hash, resultado));
@@ -116,8 +104,13 @@ internal sealed class SessaoPreparacao(TransacaoExecucao tx) : ISessaoPreparacao
     {
         var sequencia = await tx.LerAsync<SequenciaOutbox>(ChavesExecucao.SequenciaOutbox, ct);
         var proxima = checked((sequencia?.Valor ?? 0) + 1);
+        var chave = ChavesExecucao.Outbox(proxima, resultado);
+        var maiorPendencia = new PendenciaOutbox(resultado, int.MaxValue, DateTimeOffset.MaxValue,
+            new string('F', 32), DateTimeOffset.MaxValue, "FALHA_PUBLICACAO");
+        LimitesDocumentoDynamoDb.Validar(chave, JsonContrato.Serializar(maiorPendencia));
+        LimitesDocumentoDynamoDb.Validar(new("OUTBOX#ENVIADA", chave.Ordenacao), JsonContrato.Serializar(maiorPendencia));
         tx.Salvar(ChavesExecucao.SequenciaOutbox, new SequenciaOutbox(proxima));
-        await tx.AdicionarAsync(ChavesExecucao.Outbox(proxima, resultado), new PendenciaOutbox(resultado), ct);
+        await tx.AdicionarAsync(chave, new PendenciaOutbox(resultado), ct);
     }
 }
 
