@@ -1,15 +1,19 @@
-# Oficina Mecânica — Execução
+# 🔧 Oficina Mecânica — Execução
 
 Microsserviço responsável por preparação, reserva/baixa de estoque e trabalho físico do mecânico. OS coordena a Saga; Orçamento/Pagamento mantém orçamento e cobrança. Os dados de Execução pertencem ao DynamoDB, sem consultas ao banco dos demais serviços.
 
-## Arquitetura
+<a id="arquitetura"></a>
+
+## 🏗️ Arquitetura
 
 Clean Architecture com Domain, Application, Infrastructure e API. A autorização da Saga é persistida antes das ações manuais. Preparar ou aprovar orçamento não inicia o reparo. O primeiro início publica `ExecucaoIniciada`; a finalização exige todos os serviços concluídos e confirma baixa de estoque, estado e Outbox na mesma transação. Após início físico, falhas técnicas exigem recuperação, sem compensação fictícia do reparo.
 
 As mensagens usam SQS FIFO por OS, Inbox/Outbox e IDs estáveis. `servicoId` identifica a instância na OS; `servicoCatalogoId` identifica o catálogo. Repetir uma operação compatível não repete a baixa.
 
 
-## HTTP — ações do mecânico
+<a id="http--ações-do-mecânico"></a>
+
+## 🔧 HTTP — ações do mecânico
 
 Contrato definido na RFC-0007. A base é `/api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`. Os sufixos e perfis derivam de `OrdensServicoController` da API; as mutações físicas pertencem a este serviço no fluxo distribuído.
 
@@ -28,11 +32,15 @@ O GET projeta preparação, versões, indicadores históricos de reserva/cancela
 
 Erros seguem `ErrorResponse`/`TipoErro` extraídos da API: 404 para preparação ausente ou de outra OS; 409 para conflito de operação/persistência; 422 para regra de negócio; 500 genérico para falha técnica. Não retorna detalhes sensíveis do SDK. No host atual, autenticação/perfil são conferidos antes da persistência e um modo de processamento compatível precisa estar habilitado. Caso contrário, identidade autorizada recebe 503 antes de resolver clientes. Não há fallback de processamento remoto para armazenamento local; health HTTP não substitui a validação dos recursos. `/api/health` permanece público.
 
-## Estoque
+<a id="estoque"></a>
+
+## 📦 Estoque
 
 `POST /api/v1/execucoes/estoque/registrar-entrada` aceita `operacaoId`, `filialId`, `pecaInsumoCatalogoId` e `quantidade` positiva para Administrador/Atendente. A entrada é idempotente: repetir o ID e conteúdo retorna o resultado anterior; conteúdo divergente retorna conflito. Abastecer este serviço, não o estoque histórico da API.
 
-## Execução local
+<a id="execução-local"></a>
+
+## 🚀 Execução local
 
 Pré-requisitos: .NET SDK 10 e Docker Desktop. O Compose sobe API em 5094 e DynamoDB Local em `127.0.0.1:8000`, sem AWS ou SQL Server. DynamoDB Local usa credenciais fictícias definidas no cliente local, sem consultar credenciais do laboratório. Os dados do DynamoDB desta configuração são voláteis e permanecem enquanto seu container estiver ativo; reiniciar apenas a API preserva o estado, mas `compose down` o remove.
 
@@ -46,7 +54,9 @@ docker compose down
 
 Resposta esperada: `Healthy`. A porta 5094 evita conflito com a API atual em 5093. O processo recusa inicialização sem issuer, audience e chave válida. O healthcheck é público e não comprova persistência. As rotas manuais e suas condições de disponibilidade estão descritas na seção HTTP local.
 
-## Testes e qualidade
+<a id="testes-e-qualidade"></a>
+
+## 🧪 Testes e qualidade
 
 ```powershell
 dotnet restore OficinaMecanica.Execucao.sln
@@ -61,7 +71,9 @@ Na [CI de referência do código entregue](https://github.com/oficina-mecanica-s
 
 Testes de integração exigem Docker e DynamoDB Local; SQS simulado e transporte por arquivos não comprovam IAM, FIFO/DLQ ou rede AWS.
 
-## Configuração de development
+<a id="configuração-de-development"></a>
+
+## ⚙️ Configuração de development
 
 | Configuração | Responsabilidade |
 | --- | --- |
@@ -74,7 +86,9 @@ Testes de integração exigem Docker e DynamoDB Local; SQS simulado e transporte
 
 O workload usa namespace próprio, Service NodePort 30081 e listener privado 8081. Credenciais do runner não são enviadas aos Pods; a identidade LabRole compartilhada é a exceção acadêmica da ADR-0025. A criação da tabela e filas pertence a esta esteira; EKS/ECR e NLB pertencem à plataforma Kubernetes.
 
-## Dados e mensageria
+<a id="dados-e-mensageria"></a>
+
+## 📨 Dados e mensageria
 
 | Recurso | Nome em development | Configuração |
 | --- | --- | --- |
@@ -86,7 +100,9 @@ O consumidor processa PrepararExecucao, CancelarPreparacao e AutorizarExecucao. 
 
 Os seis contratos String em `/oficina-mecanica/{ambiente}/execucao/` são `dynamodb_table_name`, `dynamodb_table_arn`, `entrada_queue_url`, `entrada_queue_arn`, `dlq_url` e `dlq_arn`. O marcador `status/execucao=ready` comprova infraestrutura; não substitui saúde do workload ou prova de consumo. Campos secretos não são publicados nesses contratos.
 
-## Operação individual da DLQ
+<a id="operação-individual-da-dlq"></a>
+
+## 🔎 Operação individual da DLQ
 
 Somente em janela autorizada, usar o workflow AWS Deploy existente, na ref develop e Environment development, com a mesma concorrência do deploy. Não consumir, reenviar, remover ou purgar mensagens por comandos locais. Entradas: dlq_action, mensagem_id, corpo_sha256 e conta_aws. O digest identifica os bytes UTF-8 originais, sem publicar payload, receipt ou credenciais.
 
@@ -98,7 +114,9 @@ Somente em janela autorizada, usar o workflow AWS Deploy existente, na ref devel
 
 Revisar cada resultado antes da ação seguinte. Inspeção limitada sem encontrar a mensagem não comprova DLQ vazia nem exclusão. Em falha ou divergência, não trocar IDs/payload para forçar sucesso; investigar e reconciliar. Leituras individuais não formam snapshot: a unidade de trabalho confere revisões atomicamente antes de confirmar transições ou propagar uma recusa concorrente. Reenvio não restaura posição histórica na FIFO nem contorna versão, cancelamento ou início manual.
 
-## Observabilidade
+<a id="observabilidade"></a>
+
+## 📊 Observabilidade
 
 A emissão HTTP usa o middleware oficial do Serilog configurado como na API principal, com rota parametrizada, correlação e níveis consistentes. Healthcheck saudável não gera ruído no nível normal; avisos e erros permanecem visíveis. A origem do logger é SourceContext; mensagens das bibliotecas são preservadas, e SQL rotineiro fica fora do nível normal. Consulte a [convenção da RFC-0006](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/architecture/rfcs/rfc-0006-observabilidade-centralizada-com-datadog.md).
 
@@ -106,7 +124,9 @@ O Deployment segue as tags env/service/version da API e a admissão Datadog exis
 
 Logs JSON e spans registram serviço, operação, duração e IDs técnicos sem Authorization, credenciais, corpos ou documentos. Os IDs de OS/Saga servem à investigação em logs/traces, sem criar dimensão de métrica por entidade. Contagem de tentativas não equivale a volume único de negócio. O painel compartilhado e a prova de correlação seguem o roteiro da API; métricas ausentes não significam zero e testes sem profiler não comprovam exportação APM.
 
-## Operação e documentação
+<a id="operação-e-documentação"></a>
+
+## 🧭 Operação e documentação
 
 - [Visão geral, arquitetura e ordem das esteiras](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws).
 - [Configuração, primeira aplicação e recuperação após Reset](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/deploy/deploy-aws.md).
