@@ -140,7 +140,8 @@ public sealed class ExecucoesHttpTests(HttpDynamoDbFixture fixture) : IClassFixt
         var id = Guid.NewGuid();
         using var iniciada = await c.AcaoAsync("iniciar-execucao", id);
         Assert.Equal(HttpStatusCode.Accepted, iniciada.StatusCode);
-        Assert.Equal(c.Recurso, iniciada.Headers.Location!.AbsolutePath);
+        Assert.False(iniciada.Headers.Location!.IsAbsoluteUri);
+        Assert.Equal(c.Recurso, iniciada.Headers.Location.OriginalString);
         Assert.Equal(id, JsonDocument.Parse(await iniciada.Content.ReadAsStringAsync()).RootElement.GetProperty("operacaoId").GetGuid());
         var primeiraData = (await c.EstadoAsync()).Execucao!.Servicos[0].DataInicio;
         using (var repetida = await c.AcaoAsync("iniciar-execucao", id)) Assert.Equal(HttpStatusCode.Accepted, repetida.StatusCode);

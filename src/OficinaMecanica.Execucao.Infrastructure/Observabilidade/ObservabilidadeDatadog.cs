@@ -90,9 +90,10 @@ public sealed class ObservabilidadeDatadog(ILogger<ObservabilidadeDatadog> logge
         }
         public void Dispose()
         {
+            using var resultadoScope = logger.BeginScope(new Dictionary<string, object> { ["resultado"] = _resultado });
             var duracao = Stopwatch.GetElapsedTime(_inicio).TotalMilliseconds;
-            if (_falha) logger.LogWarning("Operação de execução pendente de recuperação; resultado {outcome}, duração {duration_ms} ms.", _resultado, duracao);
-            else logger.LogInformation("Operação de execução concluída; resultado {outcome}, duração {duration_ms} ms.", _resultado, duracao);
+            if (_falha) logger.LogWarning("Operação de mensagem pendente de recuperação; resultado {outcome}, duração {duration_ms} ms.", "falha", duracao);
+            else logger.LogInformation("Operação de mensagem concluída; resultado {outcome}, duração {duration_ms} ms.", "concluida", duracao);
             try { trace?.Dispose(); } catch { }
             logScope?.Dispose();
             restaurar();

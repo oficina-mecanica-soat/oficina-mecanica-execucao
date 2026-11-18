@@ -1,0 +1,285 @@
+name: "🔐 Proteger states legados"
+run-name: "🔐 Migrar caches legados sem acessar AWS"
+
+on:
+  push:
+    branches: [develop]
+    paths: [.github/workflows/proteger-states-legados.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: proteger-states-legados-development
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: "🔎 01 · Inventariar snapshots legados"
+    runs-on: ubuntu-latest
+    outputs:
+      has_legacy: ${{ steps.inventory.outputs.has_legacy }}
+      matrix: ${{ steps.inventory.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - &preparar_migracao
+        name: "🛡️ Preparar migração protegida"
+        run: |
+          cat > "$RUNNER_TEMP/migrar-cache-legado.cjs" <<'MIGRAR_CACHE_LEGADO'
+          'use strict';
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cp = require('node:child_process');
+          const Module = require('node:module');
+          const prefixes = {
+            'oficina-mecanica-api': 'tfstate-',
+            'oficina-mecanica-execucao': 'execucao-tfstate-',
+            'oficina-mecanica-auth-lambda': 'tfstate-auth-lambda-'
+          };
+          const arquivos = ['terraform.tfstate', 'terraform.tfstate.backup'];
+          function selecionar(caches, cifrados, repo) {
+            const prefix = prefixes[repo.split('/')[1]];
+            if (!prefix || repo !== 'oficina-mecanica-soat/' + repo.split('/')[1])
+              throw Error('Repositório não autorizado.');
+            const regex = new RegExp('^' + prefix + '(?:(\\d{12})-)?development-\\d+-\\d+(?:-prepared)?$');
+            const candidatos = caches
+              .filter((c) => c.ref === 'refs/heads/develop' && regex.test(c.key))
+              .map((c) => {
+                if (!Number.isSafeInteger(c.id) || c.id <= 0 || !Number.isFinite(Date.parse(c.created_at)))
+                  throw Error('Metadados inválidos.');
+                return { id: c.id, key: c.key, account: c.key.match(regex)[1] || '', created_at: c.created_at };
+              });
+            return candidatos.map((c) => ({
+              ...c,
+              active: Boolean(
+                c.account &&
+                  !cifrados.some(
+                    (e) =>
+                      e.ref === 'refs/heads/develop' &&
+                      e.key.startsWith('tfstate-enc-v1-' + c.account + '-development-')
+                  ) &&
+                  !candidatos.some(
+                    (e) => e.account === c.account && Date.parse(e.created_at) > Date.parse(c.created_at)
+                  )
+              )
+            }));
+          }
+          function gh(...args) {
+            return cp.execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+          }
+          function protecao() {
+            const origem = fs.readFileSync('.github/workflows/aws-deploy.yml', 'utf8').replace(/\r/g, '');
+            const bloco = origem.match(
+              /          cat > "\$RUNNER_TEMP\/proteger-estados.cjs" <<'PROTEGER_ESTADOS'\n([\s\S]*?)          PROTEGER_ESTADOS/
+            );
+            if (!bloco) throw Error('Proteção ausente.');
+            const codigo = bloco[1]
+              .split('\n')
+              .map((l) => l.slice(10))
+              .join('\n');
+            const arquivo = path.join(process.cwd(), 'protecao-migracao.cjs');
+            const modulo = new Module(arquivo);
+            modulo.paths = module.paths;
+            modulo._compile(codigo, arquivo);
+            return modulo.exports;
+          }
+          function aad(env) {
+            if (
+              !/^\d+$/.test(env.LEGACY_ID || '') ||
+              !env.LEGACY_KEY ||
+              !prefixes[env.GITHUB_REPOSITORY?.split('/')[1]]
+            )
+              throw Error('Origem inválida.');
+            return env.GITHUB_REPOSITORY + '|legacy-cache|' + env.LEGACY_ID + '|' + env.LEGACY_KEY;
+          }
+          function main(modo, env = process.env) {
+            if (modo === 'inventory') {
+              const repo = env.GITHUB_REPOSITORY,
+                prefix = prefixes[repo.split('/')[1]];
+              if (!prefix) throw Error('Repositório inválido.');
+              const listar = (key) =>
+                JSON.parse(
+                  gh('api', `repos/${repo}/actions/caches?key=${key}&per_page=100`, '--paginate', '--slurp')
+                ).flatMap((p) => p.actions_caches);
+              const candidatos = selecionar(listar(prefix), listar('tfstate-enc-v1-'), repo);
+              fs.appendFileSync(
+                env.GITHUB_OUTPUT,
+                'has_legacy=' + (candidatos.length > 0) + '\nmatrix=' + JSON.stringify(candidatos) + '\n'
+              );
+              console.log(
+                'Inventário de metadados: ' + candidatos.length + ' snapshots legados; nenhum conteúdo lido.'
+              );
+              return;
+            }
+            const p = protecao(),
+              key = p.chave(env.TERRAFORM_STATE_KEY);
+            if (modo === 'guard') {
+              aad(env);
+              return;
+            }
+            if (modo === 'seal') {
+              const files = {};
+              for (const nome of arquivos) {
+                const file = path.join(env.TF_WORKING_DIRECTORY, nome);
+                if (fs.existsSync(file)) files[nome] = fs.readFileSync(file).toString('base64');
+              }
+              if (!files['terraform.tfstate']) throw Error('Snapshot obrigatório ausente.');
+              const bytes = Buffer.from(JSON.stringify({ source: env.LEGACY_KEY, id: env.LEGACY_ID, files }));
+              const cifrado = p.selar(bytes, key, aad(env));
+              if (!p.abrir(cifrado, key, aad(env)).equals(bytes)) throw Error('Roundtrip divergente.');
+              fs.writeFileSync(path.join(env.RUNNER_TEMP, 'legacy-state.bundle.enc'), cifrado, { mode: 0o600 });
+              if (env.ATIVAR_CACHE === 'true') p.main('state-seal', env);
+              return;
+            }
+            if (modo === 'clear-local') {
+              for (const nome of arquivos)
+                for (const sufixo of ['', '.enc']) {
+                  const file = path.join(env.TF_WORKING_DIRECTORY, nome + sufixo);
+                  if (fs.existsSync(file)) fs.unlinkSync(file);
+                }
+              return;
+            }
+            if (modo === 'verify') {
+              const arquivo = path.join(env.RUNNER_TEMP, 'restaurado', env.LEGACY_ID, 'legacy-state.bundle.enc');
+              const pacote = JSON.parse(p.abrir(fs.readFileSync(arquivo, 'utf8'), key, aad(env)));
+              if (
+                pacote.source !== env.LEGACY_KEY ||
+                pacote.id !== env.LEGACY_ID ||
+                !pacote.files?.['terraform.tfstate'] ||
+                Object.keys(pacote.files).some((n) => !arquivos.includes(n))
+              )
+                throw Error('Backup divergente.');
+              if (env.ATIVAR_CACHE === 'true') p.main('state-open', env);
+              for (const [nome, dados] of Object.entries(pacote.files)) {
+                if (!fs.readFileSync(path.join(env.TF_WORKING_DIRECTORY, nome)).equals(Buffer.from(dados, 'base64')))
+                  throw Error('Cópia restaurada diverge da origem.');
+              }
+              fs.writeFileSync(path.join(env.RUNNER_TEMP, 'backup-verificado-' + env.LEGACY_ID), 'ok');
+              return;
+            }
+            if (modo === 'cleanup') {
+              if (fs.readFileSync(path.join(env.RUNNER_TEMP, 'backup-verificado-' + env.LEGACY_ID), 'utf8') !== 'ok')
+                throw Error('Sem prova de restauração.');
+              const paginas = JSON.parse(
+                gh(
+                  'api',
+                  `repos/${env.GITHUB_REPOSITORY}/actions/caches?key=${encodeURIComponent(env.LEGACY_KEY)}&per_page=100`,
+                  '--paginate',
+                  '--slurp'
+                )
+              );
+              const origem = paginas.flatMap((p) => p.actions_caches).find((c) => String(c.id) === env.LEGACY_ID);
+              if (!origem || origem.key !== env.LEGACY_KEY || origem.ref !== 'refs/heads/develop')
+                throw Error('Cache de origem divergente.');
+              gh('api', '--method', 'DELETE', `repos/${env.GITHUB_REPOSITORY}/actions/caches/${env.LEGACY_ID}`);
+              return;
+            }
+            throw Error('Modo inválido.');
+          }
+          module.exports = { selecionar, aad, main };
+          if (require.main === module) {
+            try {
+              main(process.argv[2]);
+              console.log('Migração protegida: ' + process.argv[2] + '. Nenhum valor sensível exibido.');
+            } catch {
+              console.error('Migração interrompida; não remover snapshots sem backup verificado.');
+              process.exit(1);
+            }
+          }
+          MIGRAR_CACHE_LEGADO
+      - name: "🔎 Conferir metadados sem ler conteúdos"
+        id: inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node "$RUNNER_TEMP/migrar-cache-legado.cjs" inventory
+
+  migrate:
+    name: "🔐 02 · Preservar e proteger snapshot ${{ matrix.id }}"
+    needs: inventory
+    if: needs.inventory.outputs.has_legacy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    environment: development
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.inventory.outputs.matrix) }}
+    env:
+      TF_WORKING_DIRECTORY: infra/terraform/environments/dev
+      TERRAFORM_STATE_KEY: ${{ secrets.TERRAFORM_STATE_KEY }}
+      AWS_ACCOUNT_ID: ${{ matrix.account }}
+      SSM_ENVIRONMENT_NAME: development
+      LEGACY_ID: ${{ matrix.id }}
+      LEGACY_KEY: ${{ matrix.key }}
+      ATIVAR_CACHE: ${{ matrix.active }}
+      GH_TOKEN: ${{ github.token }}
+      MIGRATION_KEY: tfstate-enc-v1-${{ matrix.account }}-development-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+      - *preparar_migracao
+      - name: "🚦 Conferir bloqueio AWS e chave antes de restaurar"
+        env:
+          DEPLOY_ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/develop
+          test "$DEPLOY_ENABLED" = false
+          node "$RUNNER_TEMP/migrar-cache-legado.cjs" guard
+      - name: "📦 Restaurar somente a chave legada inventariada"
+        id: legacy
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
+          key: ${{ matrix.key }}
+          fail-on-cache-miss: true
+      - name: "🔐 Cifrar cópia integral sem publicar conteúdo"
+        run: |
+          test '${{ steps.legacy.outputs.cache-hit }}' = true
+          node "$RUNNER_TEMP/migrar-cache-legado.cjs" seal
+      - name: "💾 Guardar backup cifrado independente do cache"
+        uses: actions/upload-artifact@v7
+        with:
+          name: state-legado-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/legacy-state.bundle.enc
+          retention-days: 90
+          if-no-files-found: error
+      - name: "💾 Publicar somente o snapshot atual como cache operacional"
+        if: matrix.active
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: ${{ env.MIGRATION_KEY }}
+      - name: "⬇️ Baixar backup para conferir a restauração"
+        uses: actions/download-artifact@v8
+        with:
+          name: state-legado-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/restaurado/${{ matrix.id }}
+      - name: "🧹 Limpar apenas a cópia local antes da prova do cache"
+        if: matrix.active
+        run: node "$RUNNER_TEMP/migrar-cache-legado.cjs" clear-local
+      - name: "⬇️ Restaurar o cache cifrado recém-publicado"
+        if: matrix.active
+        id: protected_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: ${{ env.MIGRATION_KEY }}
+          fail-on-cache-miss: true
+      - name: "✅ Conferir backup e snapshot operacional byte a byte"
+        run: |
+          if [ "$ATIVAR_CACHE" = true ]; then
+            test '${{ steps.protected_cache.outputs.cache-hit }}' = true
+          fi
+          node "$RUNNER_TEMP/migrar-cache-legado.cjs" verify
+      - name: "🧹 Remover apenas o cache legado com backup comprovado"
+        run: node "$RUNNER_TEMP/migrar-cache-legado.cjs" cleanup

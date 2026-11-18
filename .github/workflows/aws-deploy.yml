@@ -1,11 +1,16 @@
 name: "☁️ AWS Deploy"
+run-name: "☁️ Executar deploy AWS da Execução em ${{ inputs.environment_name || 'development' }}"
+
 on:
   workflow_dispatch:
     inputs:
       dlq_action:
         description: "Operação individual da DLQ (não executa Terraform)"
         type: choice
-        options: [inspecionar, reenviar, confirmar-remover]
+        options:
+          - inspecionar
+          - reenviar
+          - confirmar-remover
         required: true
       mensagem_id:
         description: "mensagemId original"
@@ -22,16 +27,20 @@ on:
   workflow_call:
     inputs:
       environment_name:
+        description: "GitHub Environment usado pelo deploy."
         type: string
         required: true
       terraform_environment_directory:
+        description: "Diretório do ambiente Terraform."
         type: string
         required: true
       ssm_environment_name:
+        description: "Nome do ambiente nos paths SSM."
         type: string
         required: true
     outputs:
       terraform_action:
+        description: "Ação Terraform resolvida: apply ou destroy."
         value: ${{ jobs.resolve_action.outputs.terraform_action }}
 
 permissions:
@@ -53,23 +62,31 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     name: "🔎 01 · Resolver ação do Terraform"
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment_name }}
+    environment:
+      name: ${{ inputs.environment_name }}
     outputs:
       terraform_action: ${{ steps.action.outputs.terraform_action }}
     steps:
-      - uses: actions/checkout@v7
+
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: "🚦 Conferir habilitação e ação versionada"
-        id: action
+
+      - name: "🛡️ Conferir habilitação do deploy AWS"
         env:
           DEPLOY_ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
+        run: |
+          test "$DEPLOY_ENABLED" = true
+          test "$GITHUB_REF" = refs/heads/develop
+
+      - name: "🚦 02 · Ler terraform-action.env e validar troca segura de destroy"
+        id: action
+        env:
           BEFORE_SHA: ${{ github.event.before }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$DEPLOY_ENABLED" = true
-          test "$GITHUB_REF" = refs/heads/develop
           control="$TF_WORKING_DIRECTORY/terraform-action.env"
           action="$(sed -n 's/^TERRAFORM_ACTION=//p' "$control" | tr -d '\r')"
           case "$action" in
@@ -89,10 +106,14 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: development
+    environment:
+      name: development
     steps:
-      - uses: actions/checkout@v7
-      - name: "🚦 Conferir janela e entradas"
+
+      - name: "📥 01 · Baixar código do repositório"
+        uses: actions/checkout@v7
+
+      - name: "🚦 02 · Conferir janela e entradas"
         env:
           DEPLOY_ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
           DLQ_ACTION: ${{ inputs.dlq_action }}
@@ -103,10 +124,13 @@ jobs:
           test "$DEPLOY_ENABLED" = true
           test "$GITHUB_REF" = refs/heads/develop
           node -e 'if(!["inspecionar","reenviar","confirmar-remover"].includes(process.env.DLQ_ACTION)||! /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(process.env.MENSAGEM_ID)||! /^[0-9a-f]{64}$/i.test(process.env.CORPO_SHA256)||! /^\d{12}$/.test(process.env.CONTA_AWS))process.exit(1)'
-      - uses: actions/setup-dotnet@v5
+
+      - name: "🛠️ 03 · Instalar SDK do .NET"
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
-      - name: "📦 Preparar inspeção com o código da aplicação"
+
+      - name: "📦 04 · Preparar inspeção com o código da aplicação"
         run: |
           mkdir -p "$RUNNER_TEMP/inspecao-dlq"
           cat > "$RUNNER_TEMP/inspecao-dlq/Inspecao.csproj" <<EOF
@@ -124,6 +148,7 @@ jobs:
           catch { Console.Error.Write("Contrato inválido; mensagem preservada."); Environment.ExitCode = 1; }
           CSHARP_INSPECAO
           dotnet build "$RUNNER_TEMP/inspecao-dlq/Inspecao.csproj" -c Release --output "$RUNNER_TEMP/inspecao-dlq/bin"
+
       - name: "🛡️ Preparar operação limitada"
         run: |
           cat > "$RUNNER_TEMP/operacao-dlq.cjs" <<'VALIDACAO_INLINE_5'
@@ -224,13 +249,16 @@ jobs:
           module.exports={operar,digest,validarEntradas};
           if(require.main === module) main();
           VALIDACAO_INLINE_5
-      - uses: aws-actions/configure-aws-credentials@v6
+
+      - name: "🔑 05 · Configurar credenciais AWS"
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: "📨 Executar fase explicitamente selecionada"
+
+      - name: "📨 06 · Executar fase explicitamente selecionada"
         env:
           DLQ_ACTION: ${{ inputs.dlq_action }}
           MENSAGEM_ID: ${{ inputs.mensagem_id }}
@@ -242,19 +270,24 @@ jobs:
     name: "📋 02 · Preparar variáveis e gerar plano do Terraform"
     needs: resolve_action
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment_name }}
+    environment:
+      name: ${{ inputs.environment_name }}
     outputs:
       ecr_image_uri: ${{ steps.platform.outputs.ecr_image_uri }}
       eks_cluster_name: ${{ steps.platform.outputs.eks_cluster_name }}
       account_id: ${{ steps.aws_credentials.outputs.aws-account-id }}
     env:
+      TERRAFORM_STATE_KEY: ${{ secrets.TERRAFORM_STATE_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
     steps:
-      - name: "📥 01 · Baixar código"
+
+      - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
+
       - name: "📁 Definir kubeconfig temporário"
         run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+
       - name: "🔑 02 · Configurar credenciais AWS"
         id: aws_credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -263,22 +296,149 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
+
       - name: "🛠️ 03 · Instalar Terraform"
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+
       - name: "🛠️ 04 · Instalar kubectl"
         uses: azure/setup-kubectl@v5
-      - name: "📦 Restaurar state da conta e ambiente"
+
+      - &protecao_artefatos
+        name: "🔐 Preparar proteção de states e planos"
+        run: |
+          cat > "$RUNNER_TEMP/proteger-estados.cjs" <<'PROTEGER_ESTADOS'
+          'use strict';
+          const fs = require('node:fs'),
+            path = require('node:path'),
+            crypto = require('node:crypto');
+          const stateFiles = ['terraform.tfstate', 'terraform.tfstate.backup'];
+          const planFiles = [
+            'tfplan',
+            'partial_destroy_override.tf',
+            'os-mensageria-destroy-context.json',
+            'execucao-destroy-context.json'
+          ];
+          function chave(valor) {
+            if (!/^[a-f0-9]{64}$/.test(valor || '')) throw Error('Chave protegida de 256 bits ausente.');
+            return Buffer.from(valor, 'hex');
+          }
+          function contexto(env, alvo) {
+            if (
+              !/^\d{12}$/.test(env.AWS_ACCOUNT_ID || '') ||
+              env.SSM_ENVIRONMENT_NAME !== 'development' ||
+              !/^oficina-mecanica-soat\/oficina-mecanica-(api|execucao|auth-lambda)$/.test(env.GITHUB_REPOSITORY || '')
+            )
+              throw Error('Escopo protegido inválido.');
+            let c = [env.GITHUB_REPOSITORY, env.AWS_ACCOUNT_ID, env.SSM_ENVIRONMENT_NAME, alvo];
+            if (alvo === 'plan') {
+              if (
+                !/^[a-z]{2}-[a-z]+-\d+$/.test(env.AWS_REGION || '') ||
+                !['apply', 'destroy'].includes(env.TERRAFORM_ACTION) ||
+                !/^\d+$/.test(env.GITHUB_RUN_ID || '') ||
+                !/^\d+$/.test(env.GITHUB_RUN_ATTEMPT || '') ||
+                !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA || '')
+              )
+                throw Error('Tentativa protegida inválida.');
+              c.push(env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT, env.GITHUB_SHA, env.TERRAFORM_ACTION, env.AWS_REGION);
+            }
+            return c.join('|');
+          }
+          function selar(bytes, key, aad) {
+            const iv = crypto.randomBytes(12),
+              c = crypto.createCipheriv('aes-256-gcm', key, iv);
+            c.setAAD(Buffer.from(aad));
+            const data = Buffer.concat([c.update(bytes), c.final()]);
+            return JSON.stringify({
+              versao: 1,
+              iv: iv.toString('base64'),
+              tag: c.getAuthTag().toString('base64'),
+              dados: data.toString('base64')
+            });
+          }
+          function abrir(serializado, key, aad) {
+            const e = JSON.parse(serializado);
+            if (e.versao !== 1 || Object.keys(e).sort().join(',') !== 'dados,iv,tag,versao')
+              throw Error('Envelope protegido inválido.');
+            const iv = Buffer.from(e.iv, 'base64'),
+              tag = Buffer.from(e.tag, 'base64');
+            if (iv.length !== 12 || tag.length !== 16) throw Error('Autenticação inválida.');
+            const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
+            d.setAAD(Buffer.from(aad));
+            d.setAuthTag(tag);
+            return Buffer.concat([d.update(Buffer.from(e.dados, 'base64')), d.final()]);
+          }
+          function main(modo, env = process.env) {
+            const dir = env.TF_WORKING_DIRECTORY,
+              key = chave(env.TERRAFORM_STATE_KEY);
+            if (!dir) throw Error('Diretório protegido ausente.');
+            if (modo === 'state-open' || modo === 'state-seal') {
+              const aad = contexto(env, 'state');
+              for (const nome of stateFiles) {
+                const raw = path.join(dir, nome),
+                  enc = raw + '.enc';
+                if (modo === 'state-open') {
+                  if (fs.existsSync(raw)) throw Error('State plaintext inesperado antes de restaurar.');
+                  if (fs.existsSync(enc))
+                    fs.writeFileSync(raw, abrir(fs.readFileSync(enc, 'utf8'), key, aad + '|' + nome), { mode: 0o600 });
+                } else if (fs.existsSync(raw))
+                  fs.writeFileSync(enc, selar(fs.readFileSync(raw), key, aad + '|' + nome), { mode: 0o600 });
+              }
+              return;
+            }
+            const bundle = path.join(dir, 'tfplan.bundle.enc'),
+              aad = contexto(env, 'plan');
+            if (modo === 'plan-seal') {
+              const arquivos = {};
+              for (const nome of planFiles) {
+                const f = path.join(dir, nome);
+                if (fs.existsSync(f)) arquivos[nome] = fs.readFileSync(f).toString('base64');
+              }
+              for (const nome of planFiles.slice(0, 1))
+                if (!arquivos[nome]) throw Error('Plano obrigatório incompleto.');
+              fs.writeFileSync(bundle, selar(Buffer.from(JSON.stringify(arquivos)), key, aad), { mode: 0o600 });
+            } else if (modo === 'plan-open') {
+              const arquivos = JSON.parse(abrir(fs.readFileSync(bundle, 'utf8'), key, aad));
+              if (!arquivos || Array.isArray(arquivos) || Object.keys(arquivos).some((n) => !planFiles.includes(n)))
+                throw Error('Pacote tenta gravar arquivo fora do plano.');
+              for (const nome of planFiles.slice(0, 1))
+                if (typeof arquivos[nome] !== 'string' || !arquivos[nome]) throw Error('Plano obrigatório ausente.');
+              for (const [nome, dados] of Object.entries(arquivos)) {
+                if (typeof dados !== 'string') throw Error('Conteúdo inválido.');
+                fs.writeFileSync(path.join(dir, nome), Buffer.from(dados, 'base64'), { mode: 0o600 });
+              }
+            } else throw Error('Operação protegida desconhecida.');
+          }
+          module.exports = { chave, contexto, selar, abrir, main };
+          if (require.main === module) {
+            try {
+              main(process.argv[2]);
+              console.log('Artefatos protegidos: ' + process.argv[2] + '.');
+            } catch {
+              console.error('Proteção dos artefatos falhou; não publicar nem substituir state.');
+              process.exit(1);
+            }
+          }
+          PROTEGER_ESTADOS
+
+      - name: "📦 05 · Restaurar cache do state do Terraform"
         uses: actions/cache/restore@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+            tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+
+      - name: "🔓 Restaurar state autenticado"
+        id: restaurar_state_protegido
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-open
+
       - &validacoes_inline
         name: "🛡️ Preparar validações definidas no workflow"
         run: |
@@ -383,6 +543,7 @@ jobs:
               throw new Error('Ambiente SSM ausente ou inválido; operação bloqueada.');
             const dir = env.TF_WORKING_DIRECTORY;
             const aws = consultarAws || ((...args) => cp.execFileSync('aws', [...args, '--region', env.AWS_REGION, '--output', 'text'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
+            let nodePort = 30081;
             let cluster = '';
             let imagem = `destroy-only:sha-${'0'.repeat(40)}`;
             let jwt = { jwt_secret: 'destroy-only-placeholder-000000000000', jwt_issuer: 'destroy-only', jwt_audience: 'destroy-only' };
@@ -395,6 +556,8 @@ jobs:
               const prefix = `/oficina-mecanica/${env.SSM_ENVIRONMENT_NAME}`;
               const parameter = suffix => aws('ssm', 'get-parameter', '--name', `${prefix}/${suffix}`, '--query', 'Parameter.Value');
               if (parameter('status/kubernetes') !== 'ready') throw new Error('Infraestrutura Kubernetes ainda não está ready.');
+              nodePort = Number(parameter('kubernetes/execucao_internal_node_port'));
+              if (nodePort !== 30081) throw new Error('NodePort de Execução diverge do contrato de ingresso privado.');
               cluster = parameter('kubernetes/cluster_name');
               if (!cluster || cluster === 'None') throw new Error('Contrato SSM de cluster ausente.');
               const nome = parameter('kubernetes/execucao_ecr_repository_name');
@@ -416,7 +579,7 @@ jobs:
               const arquivo = path.join(dir, 'terraform.tfstate');
               if (fs.existsSync(arquivo)) cluster = clusterDoState(JSON.parse(fs.readFileSync(arquivo, 'utf8')));
             } else throw new Error('Ação Terraform inválida.');
-            const vars = { environment: env.SSM_ENVIRONMENT_NAME, ...jwt, ...remoto, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
+            const vars = { node_port: nodePort, environment: env.SSM_ENVIRONMENT_NAME, ...jwt, ...remoto, image_uri: imagem, kubeconfig_path: env.TF_VAR_kubeconfig_path, cluster_name: cluster };
             fs.writeFileSync(path.join(dir, 'zz_ci.auto.tfvars.json'), JSON.stringify(vars), { mode: 0o600 });
             fs.appendFileSync(env.GITHUB_OUTPUT, `ecr_image_uri=${imagem}\neks_cluster_name=${cluster}\n`);
           }
@@ -425,6 +588,10 @@ jobs:
             try { main(); } catch { console.error('Preparação do ambiente falhou; contratos, permissões e state devem ser conferidos. Nenhum valor sensível foi registrado.'); process.exit(1); }
           }
           VALIDACAO_INLINE_1
+
+      - &validacoes_recuperacao
+        name: "🛡️ Preparar validações de recuperação e infraestrutura"
+        run: |
           cat > "$RUNNER_TEMP/prepare-destroy.cjs" <<'VALIDACAO_INLINE_2'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -638,7 +805,8 @@ jobs:
 
       - name: "🛡️ Validar state da conta AWS atual"
         run: node "$RUNNER_TEMP/bootstrap-account-state.cjs"
-      - name: "📝 Consumir contratos SSM e preparar variáveis"
+
+      - name: "📝 06 · Consumir contratos SSM e preparar variáveis"
         id: platform
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
@@ -647,9 +815,11 @@ jobs:
           PROCESSAMENTO_REMOTO_HABILITADO: ${{ vars.PROCESSAMENTO_REMOTO_HABILITADO || 'false' }}
           AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
         run: node "$RUNNER_TEMP/preparar-ambiente-execucao.cjs"
+
       - name: "🛡️ Bloquear destroy com mensagens ou outbox pendentes"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" before-destroy
+
       - name: "🛡️ Preparar configuração exclusiva de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: |
@@ -657,7 +827,8 @@ jobs:
           if [ -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json"
           fi
-      - name: "🔗 Configurar kubeconfig do EKS"
+
+      - name: "🔗 07 · Configurar kubeconfig do EKS"
         if: steps.platform.outputs.eks_cluster_name != ''
         env:
           EKS_CLUSTER_NAME: ${{ steps.platform.outputs.eks_cluster_name }}
@@ -665,41 +836,59 @@ jobs:
           if [ ! -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --kubeconfig "$TF_VAR_kubeconfig_path"
           fi
-      - name: "🚀 Inicializar e validar Terraform"
+
+      - name: "🚀 08 · Inicializar e validar Terraform"
         run: |
           terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
           terraform -chdir="$TF_WORKING_DIRECTORY" validate
-      - name: "💾 Preservar state inclusive após falha parcial"
-        if: always() && steps.aws_credentials.outputs.aws-account-id != ''
+
+      - name: "🔐 Cifrar state inclusive após falha parcial"
+        id: cifrar_state_0
+        if: always() && steps.restaurar_state_protegido.outcome == 'success'
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-seal
+
+      - name: "💾 09 · Salvar cache do state inclusive após falha parcial"
+        if: always() && steps.cifrar_state_0.outcome == 'success'
         uses: actions/cache/save@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
-      - name: "📐 Gerar plano do Terraform (apply)"
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
+
+      - name: "📐 10 · Gerar plano do Terraform (apply)"
         if: env.TERRAFORM_ACTION == 'apply'
         run: terraform -chdir="$TF_WORKING_DIRECTORY" plan -input=false -out=tfplan
-      - name: "📐 Gerar plano do Terraform (destroy)"
+
+      - name: "📐 10 · Gerar plano do Terraform (destroy)"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: terraform -chdir="$TF_WORKING_DIRECTORY" plan -destroy -input=false -out=tfplan
+
       - name: "🛡️ Bloquear infraestrutura compartilhada no plano"
         run: |
           terraform -chdir="$TF_WORKING_DIRECTORY" show -json tfplan > "$RUNNER_TEMP/tfplan.json"
           node "$RUNNER_TEMP/validar-ownership-plano.cjs" "$RUNNER_TEMP/tfplan.json"
+
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-plan
-      - name: "🧹 Remover arquivo temporário com secrets"
+
+      - name: "🧹 11 · Remover arquivo temporário com secrets"
         if: always()
         run: rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json" "$RUNNER_TEMP/tfplan.json"
-      - name: "⬆️ Publicar o plano salvo"
+
+      - name: "🔐 Cifrar plano vinculado à tentativa"
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" plan-seal
+
+      - name: "⬆️ 12 · Publicar plano do Terraform como artefato"
         uses: actions/upload-artifact@v7
         with:
           name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/tfplan
-            ${{ env.TF_WORKING_DIRECTORY }}/execucao-destroy-context.json
+          path: ${{ env.TF_WORKING_DIRECTORY }}/tfplan.bundle.enc
           retention-days: 1
           if-no-files-found: error
 
@@ -717,11 +906,10 @@ jobs:
       ECR_IMAGE_URI: ${{ needs.prepare_and_plan.outputs.ecr_image_uri }}
 
     steps:
+
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
 
-      - name: "📁 Definir kubeconfig temporário"
-        run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
       - name: "🔑 02 · Configurar credenciais AWS"
         uses: aws-actions/configure-aws-credentials@v6
         id: aws_credentials
@@ -773,20 +961,28 @@ jobs:
 
   apply_or_destroy:
     name: "☁️ 04 · Aplicar ou destruir infraestrutura"
-    needs: [resolve_action, prepare_and_plan, build_and_push_image]
+    needs:
+      - resolve_action
+      - prepare_and_plan
+      - build_and_push_image
     if: always() && needs.resolve_action.result == 'success' && needs.prepare_and_plan.result == 'success' && (needs.resolve_action.outputs.terraform_action == 'destroy' || needs.build_and_push_image.result == 'success')
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment_name }}
+    environment:
+      name: ${{ inputs.environment_name }}
     env:
+      TERRAFORM_STATE_KEY: ${{ secrets.TERRAFORM_STATE_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
       EKS_CLUSTER_NAME: ${{ needs.prepare_and_plan.outputs.eks_cluster_name }}
       PLANNED_ACCOUNT_ID: ${{ needs.prepare_and_plan.outputs.account_id }}
     steps:
-      - name: "📥 01 · Baixar código"
+
+      - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
+
       - name: "📁 Definir kubeconfig temporário"
         run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+
       - name: "🔑 02 · Configurar credenciais AWS"
         id: aws_credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -795,30 +991,45 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
+
       - name: "🛠️ 03 · Instalar Terraform"
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+
       - name: "🛠️ 04 · Instalar kubectl"
         uses: azure/setup-kubectl@v5
+
       - name: "🛡️ Confirmar a mesma conta do planejamento"
         env:
           CURRENT_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
         run: test "$CURRENT_ACCOUNT_ID" = "$PLANNED_ACCOUNT_ID"
-      - name: "📦 Restaurar state da conta e ambiente"
+
+      - *protecao_artefatos
+
+      - name: "📦 05 · Restaurar cache do state do Terraform"
         uses: actions/cache/restore@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}-prepared
           restore-keys: |
-            execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+            tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+
+      - name: "🔓 Restaurar state autenticado"
+        id: restaurar_state_protegido
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-open
+
       - *validacoes_inline
+      - *validacoes_recuperacao
 
       - name: "🛡️ Validar state da conta AWS atual"
         run: node "$RUNNER_TEMP/bootstrap-account-state.cjs"
+
       - name: "🛡️ Preparar configuração exclusiva de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: |
@@ -826,59 +1037,88 @@ jobs:
           if [ -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             rm -f "$TF_WORKING_DIRECTORY/zz_ci.auto.tfvars.json"
           fi
-      - name: "🔗 Configurar kubeconfig do EKS"
+
+      - name: "🔗 06 · Configurar kubeconfig do EKS"
         if: env.EKS_CLUSTER_NAME != ''
         run: |
           if [ ! -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --kubeconfig "$TF_VAR_kubeconfig_path"
           fi
-      - name: "🚀 Inicializar Terraform"
+
+      - name: "🚀 07 · Inicializar Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
-      - name: "⬇️ Baixar o plano salvo desta tentativa"
+
+      - name: "⬇️ 08 · Baixar plano do Terraform publicado nesta tentativa"
         uses: actions/download-artifact@v8
         with:
           name: tfplan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TF_WORKING_DIRECTORY }}
+
+      - name: "🔓 Validar e abrir plano desta tentativa"
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" plan-open
+
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-plan
+
       - name: "🛡️ Revalidar pendências imediatamente antes do destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" before-destroy
-      - name: "✅ Aplicar somente o plano salvo"
+
+      - name: "✅ 09 · Aplicar somente o plano salvo"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false tfplan
+
       - name: "🔎 Confirmar state sem recursos gerenciados"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/prepare-destroy.cjs" verify-state
+
       - name: "🔎 Validar recursos e contratos após apply"
         if: env.TERRAFORM_ACTION == 'apply'
         run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" after-apply
+
       - name: "🔎 Confirmar remoção dos recursos e contratos"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node "$RUNNER_TEMP/verificar-infra-execucao.cjs" after-destroy
-      - name: "💾 Preservar state inclusive após falha parcial"
-        if: always() && steps.aws_credentials.outputs.aws-account-id != ''
+
+      - name: "🔐 Cifrar state inclusive após falha parcial"
+        id: cifrar_state_1
+        if: always() && steps.restaurar_state_protegido.outcome == 'success'
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.aws_credentials.outputs.aws-account-id }}
+        run: node "$RUNNER_TEMP/proteger-estados.cjs" state-seal
+
+      - name: "💾 10 · Salvar cache do state inclusive após falha parcial"
+        if: always() && steps.cifrar_state_1.outcome == 'success'
         uses: actions/cache/save@v6
         with:
           path: |
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
-            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: execucao-tfstate-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.enc
+            ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup.enc
+          key: tfstate-enc-v1-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   rollout_check:
     name: "☸️ 05 · Validar rollout da aplicação no EKS"
-    needs: [resolve_action, prepare_and_plan, apply_or_destroy]
+    needs:
+      - resolve_action
+      - prepare_and_plan
+      - apply_or_destroy
     if: needs.resolve_action.outputs.terraform_action == 'apply' && needs.apply_or_destroy.result == 'success'
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment_name }}
+    environment:
+      name: ${{ inputs.environment_name }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       EKS_CLUSTER_NAME: ${{ needs.prepare_and_plan.outputs.eks_cluster_name }}
     steps:
-      - name: "📥 01 · Baixar código"
+
+      - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
+
       - name: "📁 Definir kubeconfig temporário"
         run: echo "TF_VAR_kubeconfig_path=$RUNNER_TEMP/execucao-kubeconfig" >> "$GITHUB_ENV"
+
       - name: "🔑 02 · Configurar credenciais AWS"
         id: aws_credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -887,14 +1127,17 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: "🛠️ 04 · Instalar kubectl"
+
+      - name: "🛠️ 03 · Instalar kubectl"
         uses: azure/setup-kubectl@v5
-      - name: "🔗 Configurar kubeconfig do EKS"
+
+      - name: "🔗 04 · Configurar kubeconfig do EKS"
         run: |
           if [ ! -f "$TF_WORKING_DIRECTORY/destroy_only.tf" ]; then
             aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --kubeconfig "$TF_VAR_kubeconfig_path"
           fi
-      - name: "⏳ Aguardar rollout e validar healthcheck"
+
+      - name: "⏳ 05 · Aguardar rollout da aplicação e validar healthcheck"
         run: |
           set -euo pipefail
           kubectl --kubeconfig "$TF_VAR_kubeconfig_path" -n oficina-mecanica-execucao rollout status deployment/oficina-mecanica-execucao --timeout=600s
