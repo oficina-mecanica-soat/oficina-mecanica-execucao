@@ -2,6 +2,17 @@
 
 Microsserviço responsável por preparação, reserva/baixa de estoque e trabalho físico do mecânico. OS coordena a Saga; Orçamento/Pagamento mantém orçamento e cobrança. Os dados de Execução pertencem ao DynamoDB, sem consultas ao banco dos demais serviços.
 
+## 🏗️ Recursos provisionados por esta esteira
+
+| Recurso próprio | Uso e integração |
+| --- | --- |
+| Namespace, Deployment, Secret e Service NodePort 30081 | Workload de Execução; imagem publicada no ECR de Execução criado pela plataforma |
+| Tabela DynamoDB | Estado de preparação/execução, estoque, reservas, deduplicação e Outbox; recursos definidos em `dados-mensageria.tf` |
+| Entrada SQS FIFO, DLQ e política de redrive | Comandos da Saga de OS; os resultados são publicados na fila de OS, que pertence à API |
+| Parâmetros SSM | Nome/ARN da tabela, URLs/ARNs das filas e prontidão de infraestrutura |
+
+Consome EKS, ECR e listener privado 8081 da esteira Kubernetes e a fila de resultados da API. Não cria banco SQL no RDS, outro cluster ou NLB. O Terraform atual não cria ConfigMap nem HPA para Execução: configurações não secretas são definidas no Deployment. Fonte: [`infra/terraform/environments/dev`](infra/terraform/environments/dev).
+
 <a id="arquitetura"></a>
 
 ## 🏗️ Arquitetura
